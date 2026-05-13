@@ -45,7 +45,7 @@ function wsAuth(req) {
 
 // Serve dashboard with auth token injected into WebSocket URL
 app.get('/', auth, (req, res) => {
-  const html = require('fs').readFileSync(__dirname + '/dashboard/index.html', 'utf8');
+  const html = require('fs').readFileSync(__dirname + '/index.html', 'utf8');
   res.send(html.replace(/TOKEN_PLACEHOLDER/g, AUTH_TOKEN));
 });
 
@@ -169,7 +169,7 @@ app.post('/api/switch-server', (req, res) => {
   res.json({success: true, agentsNotified: count, newUrl});
 });
 
-app.use(express.static(__dirname + '/dashboard'));
+app.use(express.static(__dirname));
 
 // Store connected agents: { agentId: { ws, name, lastFrame, viewers: Set } }
 const agents = new Map();
