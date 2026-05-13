@@ -45,16 +45,16 @@ function wsAuth(req) {
 
 // Serve dashboard with auth token injected into WebSocket URL
 app.get('/', auth, (req, res) => {
-  const html = require('fs').readFileSync(__dirname + '/index.html', 'utf8');
+  const html = require('fs').readFileSync(__dirname + '/dashboard/index.html', 'utf8');
   res.send(html.replace(/TOKEN_PLACEHOLDER/g, AUTH_TOKEN));
 });
 
 // Remote session page (no install, browser-based screen sharing)
 app.get('/remote-session', (req, res) => {
   res.send(`<!DOCTYPE html><html><body style="margin:0;background:#0f0f23;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column">
-<h1 style="color:#7c7cf0">Remote Session</h1>
-<p style="color:#888;margin:10px 0">Click below to share your screen</p>
-<button onclick="start()" style="background:#7c7cf0;color:#fff;border:none;padding:15px 30px;border-radius:8px;font-size:18px;cursor:pointer">Share Screen</button>
+<h1 style="color:#7c7cf0">Remote Assistance</h1>
+<p style="color:#888;margin:10px 0">You are about to share YOUR screen with the support person.</p>
+<button onclick="start()" style="background:#7c7cf0;color:#fff;border:none;padding:15px 30px;border-radius:8px;font-size:18px;cursor:pointer">Share My Screen</button>
 <div id="status" style="margin-top:20px;color:#555"></div>
 <video id="preview" style="max-width:90%;max-height:60vh;margin-top:20px;display:none" autoplay></video>
 <script>
@@ -71,7 +71,11 @@ function start(){
   document.getElementById('status').textContent='Connected. You can close this tab when done.';
   
   ws=new WebSocket(WS_URL);
-  ws.onopen=()=>ws.send(JSON.stringify({type:'agent-hello',agentId:'session-'+Math.random().toString(36).slice(2,8),name:'🖥 Remote Session'}));
+  ws.onopen=()=>{
+   const sessionId='session-'+Math.random().toString(36).slice(2,8);
+   window.sessionId=sessionId;
+   ws.send(JSON.stringify({type:'agent-hello',agentId:sessionId,name:'🖥 Remote Session'}));
+  };
   
   // Capture and send frames
   const canvas=document.createElement('canvas');
@@ -84,7 +88,7 @@ function start(){
    ctx.drawImage(video,0,0);
    canvas.toBlob(b=>{
     const reader=new FileReader();
-    reader.onload=()=>ws.send(JSON.stringify({type:'agent-frame',agentId:'session',frame:reader.result.split(',')[1]}));
+    reader.onload=()=>ws.send(JSON.stringify({type:'agent-frame',agentId:window.sessionId,frame:reader.result.split(',')[1]}));
     reader.readAsDataURL(b);
    },'image/jpeg',50);
    setTimeout(sendFrame,200);
@@ -165,7 +169,7 @@ app.post('/api/switch-server', (req, res) => {
   res.json({success: true, agentsNotified: count, newUrl});
 });
 
-app.use(express.static(__dirname));
+app.use(express.static(__dirname + '/dashboard'));
 
 // Store connected agents: { agentId: { ws, name, lastFrame, viewers: Set } }
 const agents = new Map();
