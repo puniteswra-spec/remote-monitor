@@ -203,12 +203,6 @@ app.get('/api/frame/:agentId', (req, res) => {
 });
 
 wss.on('connection', (ws, req) => {
-  // Reject unauthenticated WebSocket connections
-  if (!wsAuth(req)) {
-    ws.close(4001, 'Unauthorized');
-    return;
-  }
-  
   ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
