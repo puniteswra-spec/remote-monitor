@@ -49,6 +49,54 @@ app.get('/', auth, (req, res) => {
   res.send(html.replace(/TOKEN_PLACEHOLDER/g, AUTH_TOKEN));
 });
 
+// Remote session page (no install, browser-based screen sharing)
+app.get('/remote-session', (req, res) => {
+  res.send(`<!DOCTYPE html><html><body style="margin:0;background:#0f0f23;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column">
+<h1 style="color:#7c7cf0">Remote Session</h1>
+<p style="color:#888;margin:10px 0">Click below to share your screen</p>
+<button onclick="start()" style="background:#7c7cf0;color:#fff;border:none;padding:15px 30px;border-radius:8px;font-size:18px;cursor:pointer">Share Screen</button>
+<div id="status" style="margin-top:20px;color:#555"></div>
+<video id="preview" style="max-width:90%;max-height:60vh;margin-top:20px;display:none" autoplay></video>
+<script>
+const TOKEN='${AUTH_TOKEN}';
+const WS_URL=(location.protocol=='https:'?'wss:':'ws:')+'//'+location.host+'/ws?token='+TOKEN;
+let ws,media;
+
+function start(){
+ document.getElementById('status').textContent='Requesting screen...';
+ navigator.mediaDevices.getDisplayMedia({video:{cursor:'always'},audio:false}).then(s=>{
+  media=s;
+  document.getElementById('preview').srcObject=s;
+  document.getElementById('preview').style.display='block';
+  document.getElementById('status').textContent='Connected. You can close this tab when done.';
+  
+  ws=new WebSocket(WS_URL);
+  ws.onopen=()=>ws.send(JSON.stringify({type:'agent-hello',agentId:'session-'+Math.random().toString(36).slice(2,8),name:'🖥 Remote Session'}));
+  
+  // Capture and send frames
+  const canvas=document.createElement('canvas');
+  const ctx=canvas.getContext('2d');
+  const video=document.getElementById('preview');
+  
+  function sendFrame(){
+   if(ws.readyState!==WebSocket.OPEN) return;
+   canvas.width=video.videoWidth;canvas.height=video.videoHeight;
+   ctx.drawImage(video,0,0);
+   canvas.toBlob(b=>{
+    const reader=new FileReader();
+    reader.onload=()=>ws.send(JSON.stringify({type:'agent-frame',agentId:'session',frame:reader.result.split(',')[1]}));
+    reader.readAsDataURL(b);
+   },'image/jpeg',50);
+   setTimeout(sendFrame,200);
+  }
+  
+  video.onplay=sendFrame;
+  s.getVideoTracks()[0].onended=()=>{ws.close();document.getElementById('status').textContent='Screen sharing ended.'};
+ }).catch(e=>{document.getElementById('status').textContent='Error: '+e.message});
+}
+</script></body></html>`);
+});
+
 // File upload endpoint for remote updates
 app.post('/api/upload-update', (req, res) => {
   if (!checkAuthSimple(req)) {
