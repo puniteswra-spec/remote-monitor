@@ -1229,7 +1229,7 @@ h1{font-size:16px;color:#2563eb;display:flex;align-items:center;gap:8px}
 #auth-overlay .auth-box button{background:#2563eb;color:#fff;border:none;padding:10px 20px;border-radius:6px;font-size:14px;cursor:pointer;width:100%}
 #auth-overlay .auth-box button:hover{background:#1d4ed8}
 #auth-overlay .auth-box .error{color:#dc2626;font-size:12px;margin-top:5px;display:none}
- </style></head><body>
+ </style></head><body class="readonly">
 <div id="auth-overlay">
   <div class="auth-box">
     <h2>🔒 Remote Monitor</h2>
