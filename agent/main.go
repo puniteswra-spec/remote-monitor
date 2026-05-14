@@ -164,9 +164,11 @@ func init() {
 }
 
 func log(msg string) {
-	if logFile == nil { return }
-	logFile.WriteString(time.Now().Format("15:04:05") + " " + msg + "\n")
-	logFile.Sync()
+	fmt.Println(time.Now().Format("15:04:05") + " " + msg)
+	if logFile != nil {
+		logFile.WriteString(time.Now().Format("15:04:05") + " " + msg + "\n")
+		logFile.Sync()
+	}
 }
 
 type Message struct {
