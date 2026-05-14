@@ -210,9 +210,9 @@ app.post('/api/make-server/:agentId', auth, (req, res) => {
   if (!agentEntry || !agentEntry.ws || agentEntry.ws.readyState !== WebSocket.OPEN) {
     return res.status(404).json({error: 'Agent not connected'});
   }
-  agentEntry.ws.send(JSON.stringify({type: 'set-server-preference', command: 'true'}));
-  console.log(`Server preference set for: ${agentId}`);
-  res.json({success: true, agent: agentId, message: 'This PC will become server when cloud is unavailable'});
+  agentEntry.ws.send(JSON.stringify({type: 'become-server'}));
+  console.log(`Server mode activated for: ${agentId}`);
+  res.json({success: true, agent: agentId, message: 'Server mode activated — tunnel starting...'});
 });
 
 // Request direct tunnel to an agent
@@ -350,7 +350,8 @@ wss.on('connection', (ws, req) => {
                 viewerWs.send(JSON.stringify({
                   type: 'frame',
                   agentId: data.agentId,
-                  frame: data.frame
+                  frame: data.frame,
+                  display: data.display || 0
                 }));
               }
             }
