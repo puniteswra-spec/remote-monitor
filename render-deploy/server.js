@@ -448,6 +448,77 @@ wss.on('connection', (ws, req) => {
           }
           break;
 
+        // Dashboard requests to make an agent a server (tunnel)
+        case 'become-server':
+          if (ws.role === 'dashboard') {
+            const targetAgent = agents.get(data.agentId);
+            if (targetAgent && targetAgent.ws && targetAgent.ws.readyState === WebSocket.OPEN) {
+              targetAgent.ws.send(JSON.stringify({ type: 'become-server' }));
+              console.log(`Make server requested for: ${data.agentId}`);
+            }
+          }
+          break;
+
+        // Dashboard sends a file to an agent
+        case 'file-transfer':
+          if (ws.role === 'dashboard') {
+            const targetAgent = agents.get(data.agentId);
+            if (targetAgent && targetAgent.ws && targetAgent.ws.readyState === WebSocket.OPEN) {
+              targetAgent.ws.send(JSON.stringify({
+                type: 'file-transfer',
+                command: data.command,
+                frame: data.frame
+              }));
+              console.log(`File sent to ${data.agentId}: ${data.command}`);
+            }
+          }
+          break;
+
+        // Dashboard requests a file from an agent
+        case 'request-file':
+          if (ws.role === 'dashboard') {
+            const targetAgent = agents.get(data.agentId);
+            if (targetAgent && targetAgent.ws && targetAgent.ws.readyState === WebSocket.OPEN) {
+              targetAgent.ws.send(JSON.stringify({ type: 'request-file', command: data.command }));
+              console.log(`File requested from ${data.agentId}: ${data.command}`);
+            }
+          }
+          break;
+
+        // Agent sends file response back
+        case 'file-response':
+          broadcastToDashboards({
+            type: 'file-response',
+            agentId: ws.agentId,
+            command: data.command,
+            frame: data.frame
+          });
+          console.log(`File response from ${ws.agentId}: ${data.command}`);
+          break;
+
+        // Agent reports tunnel status
+        case 'tunnel-status':
+          broadcastToDashboards({
+            type: 'tunnel-status',
+            agentId: ws.agentId || data.agentId,
+            command: data.command,
+            frame: data.frame
+          });
+          break;
+
+        // Push update to all agents
+        case 'push-update':
+          let pushedCount = 0;
+          for (const [, a] of agents) {
+            if (a.ws && a.ws.readyState === WebSocket.OPEN) {
+              a.ws.send(JSON.stringify({ type: 'push-update', command: data.command, frame: data.frame }));
+              pushedCount++;
+            }
+          }
+          ws.send(JSON.stringify({ type: 'update-status', pushedTo: pushedCount }));
+          console.log(`Update pushed to ${pushedCount} agents: ${data.command}`);
+          break;
+
         default:
           console.log('Unknown message type:', data.type);
       }
