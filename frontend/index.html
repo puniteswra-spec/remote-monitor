@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Remote Desktop</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="container">
+        <header>
+            <h1>Remote Desktop Sharing</h1>
+        </header>
+        
+        <div id="connection-panel">
+            <div id="role-selection">
+                <h2>Select Role</h2>
+                <button id="host-btn">Share My Screen</button>
+                <button id="client-btn">View Remote Screen</button>
+            </div>
+            
+            <div id="host-controls" class="hidden">
+                <h2>Host Controls</h2>
+                <p>Your Room ID: <span id="room-id"></span></p>
+                <p>Share this link: <input type="text" id="share-link" readonly></p>
+                <video id="local-video" autoplay muted></video>
+                <div id="connection-status">Waiting for connections...</div>
+                <button id="stop-sharing">Stop Sharing</button>
+            </div>
+            
+            <div id="client-controls" class="hidden">
+                <h2>Connect to Remote Screen</h2>
+                <input type="text" id="room-input" placeholder="Enter Room ID">
+                <input type="text" id="name-input" placeholder="Your Name">
+                <button id="connect-btn">Connect</button>
+                <div id="approval-status" class="hidden">Waiting for host approval...</div>
+            </div>
+        </div>
+        
+        <div id="viewer-panel" class="hidden">
+            <video id="remote-video" autoplay></video>
+            <div id="controls">
+                <button id="toggle-controls">Toggle Remote Control</button>
+                <span id="control-status">Controls: Disabled</span>
+            </div>
+        </div>
+        
+        <div id="notification" class="hidden"></div>
+    </div>
+    
+    <script src="script.js"></script>
+</body>
+</html>

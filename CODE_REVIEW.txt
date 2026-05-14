@@ -1,0 +1,318 @@
+CODE REVIEW DOCUMENT
+====================
+Remote Monitor & Control System v5.5.1
+
+========================================
+FILE 1: agent/main.go (Go - 6.7MB .exe)
+========================================
+
+PURPOSE: Windows agent executable. Captures screen, sends to server, 
+receives control commands.
+
+KEY STRUCTURES:
+
+Message struct - JSON message format for WebSocket communication
+  Type: string - message type (agent-hello, agent-frame, control, etc.)
+  AgentId: string - unique identifier for this agent
+  Name: string - computer hostname
+  Frame: string - base64-encoded JPEG screenshot
+  Fps: int - frames per second setting
+  Command: string - control command (mousemove, click, keypress)
+  Params: map[string]string - control parameters (x, y, key)
+
+KEY FUNCTIONS:
+
+main() - Entry point
+  - Checks for --server flag
+  - Prevents duplicate instances (lock file)
+  - Tries to start local server (port 3000)
+  - ALSO connects to cloud/server as agent
+  - Infinite reconnect loop (3 second delay)
+
+runServer() - Local server mode
+  - HTTP server on port 3000
+  - WebSocket relay for agents
+  - Serves embedded dashboard HTML
+  - Tracks all connected agents
+  - Forwards frames from agents to viewers
+  - Forwards control commands to agents
+  - Starts embedded agent for this PC too
+
+connect() - Connect to cloud server as agent
+  - Reads urls.ini for custom URLs
+  - Tries each URL in order until one connects
+  - Sends agent-hello registration
+  - Runs goroutine to receive messages
+  - Sends frames in loop (at configured FPS)
+  - Handles: set-fps, control, push-update, switch-server, file-transfer
+
+capture() - Screen capture
+  - Uses github.com/kbinani/screenshot
+  - Captures primary display
+  - Encodes as JPEG quality 50
+  - Returns base64 string
+
+executeControl() - Execute remote control commands
+  - mousemove: moves mouse to percentage coordinates
+  - click: moves mouse and clicks (left/right)
+  - keypress: simulates keyboard key
+
+Windows API calls (SendInput):
+  - makeMouseInput() - builds INPUT struct for mouse events
+  - makeKeyboardInput() - builds INPUT struct for keyboard events
+  - Uses raw byte buffers for correct struct alignment
+
+setupAutostart() - Windows auto-start
+  - Creates watchdog.bat next to .exe
+  - Sets registry RUN key to watchdog.bat
+  - Writes all other files to %APPDATA%\SystemHelper\
+
+preventDuplicate() - Single instance enforcement
+  - Writes PID to agent.lock file
+  - Reads old PID from lock file
+  - Kills old process if found
+  - New .exe replaces old automatically
+
+handleRemoteUpdate() - Receive new .exe from dashboard
+  - Receives base64 encoded .exe
+  - Saves to temp file
+  - Replaces current .exe
+  - Restarts with new version
+
+handleFileTransfer() - Receive files from dashboard
+  - Saves to received/ folder in data directory
+
+Activity logging:
+  - startActivityLogger() - goroutine tracking idle time
+  - getIdleSeconds() - Windows API GetLastInputInfo
+  - Logs INACTIVE (>5 min idle) and ACTIVE (resumed)
+  - Logs uptime every hour
+  - Writes to activity.log in data directory
+
+cleanTempFiles() - Startup cleanup
+  - Windows Temp folder
+  - Browser cache
+  - DNS cache
+  - Prefetch files
+  - Disk Cleanup
+
+SECURITY:
+  - Auth token embedded in WebSocket URL
+  - Password protection on dashboard
+  - All files in %APPDATA% (hidden from user)
+  - Single instance enforcement
+
+========================================
+FILE 2: server/server.js (Node.js)
+========================================
+
+PURPOSE: Central server. Runs on Mac OR Render.com. Relays 
+communication between agents and dashboard.
+
+KEY VARIABLES:
+  agents: Map of connected agents (agentId → {ws, name, lastFrame, ...})
+  dashboards: Set of dashboard WebSocket connections
+  AUTH_USER/AUTH_PASS: Login credentials
+  AUTH_TOKEN: SHA256 hash of credentials
+  agentHistory: Array of disconnected agent sessions
+
+HTTP ENDPOINTS:
+
+GET / - Dashboard page
+  - Auth required (Basic Auth)
+  - Injects AUTH_TOKEN into HTML for WebSocket auth
+  
+GET /api/agents - List connected agents
+  - Auth required
+  - Returns JSON array of {id, name, ip, connected, viewers}
+  
+GET /api/report - Agent activity report
+  - Auth required
+  - ?format=csv for CSV download
+  - Returns JSON {online: [...], history: [...]}
+  
+POST /api/upload-update - Push new .exe to all agents
+  - Auth required
+  - Sends push-update to all connected agents
+  
+POST /api/send-file/:agentId - Send file to specific agent
+  - Auth required
+  - Header: X-Filename
+  - Sends file-transfer to that agent
+  
+POST /api/switch-server - Tell agents to switch server
+  - Auth required
+  - Header: X-Server-URL
+  - Sends switch-server to all agents
+
+WebSocket Message Handlers:
+
+agent-hello:
+  - Registers agent in agents Map
+  - Tracks: name, IP, connection time, events array
+  - Broadcasts agent-connected to dashboards
+
+agent-frame:
+  - Updates agent's lastFrame
+  - Increments framesReceived counter
+  - Forwards frame to all dashboard viewers
+
+dashboard-hello:
+  - Registers dashboard
+  - Sends current agent list
+
+view-agent:
+  - Adds dashboard to agent's viewers
+  - Sends current frame immediately
+  - Notifies agent to increase FPS to 10
+
+stop-viewing:
+  - Removes dashboard from agent's viewers
+  - If no viewers left, sets FPS back to 1
+
+control:
+  - Forwards control command to specific agent
+
+agent-log:
+  - Logs message from agent
+
+Close handler:
+  - Saves agent to history before deleting
+  - Broadcasts agent-disconnected
+  - Cleans up dashboard subscriptions
+
+SECURITY:
+  - Basic Auth on all HTTP endpoints
+  - WebSocket accepts all connections (agents need no auth)
+  - Password: puneet/puneet12
+
+========================================
+FILE 3: dashboard/index.html
+========================================
+
+PURPOSE: Web-based user interface. Single HTML file with embedded CSS and JS.
+
+FEATURES:
+
+Agent List (left sidebar):
+  - Connected Devices header with 🔒 lock icon
+  - Each agent shows: name, IP address, agent ID
+  - Click to select, View to start streaming
+  - Hide button (✕ hide) to remove from view
+
+Screen Viewer (main area):
+  - Live screen display from selected agent
+  - Control button (hidden until authenticated)
+  - Send File button (visible during control)
+  - Stop button to end viewing
+
+Hidden Authentication:
+  - 🔒 icon in sidebar header
+  - Click → password field appears at bottom
+  - Enter puneet12 → Control enabled
+  - Without auth: view-only mode
+
+Auto-Failover:
+  - If current server disconnects
+  - Tries backup servers in order:
+    1. Render.com
+    2. ngrok
+    3. Port forwarding
+  - Updates badge to show current server
+
+Server Badge:
+  - Shows which server you're connected to
+  - 🟢 Render, 🟡 ngrok, 🔵 Local, 🟠 Cloudflare
+
+KEY JS FUNCTIONS:
+
+connect() / connectToServer() - WebSocket connection
+renderAgentList() - Display agents (filters hidden)
+addAgentCard() - Create agent HTML element
+hideAgent() - Remove agent from view (localStorage)
+showHidden() - Restore hidden agents
+showAuth() / tryAuth() - Authentication
+enableControl() / disableControl() - Control mode
+onMouseMove() / onMouseClick() / onKeyDown() - Send control commands
+
+========================================
+FILE 4: render-deploy/server.js
+========================================
+
+Same as server/server.js but with paths adjusted for Render.com:
+  - readFileSync uses /index.html (not /dashboard/index.html)
+  - express.static uses __dirname (not /dashboard)
+  - No dashboard folder needed on Render
+
+========================================
+FILE 5: RemoteMonitor.command (Mac)
+========================================
+
+Bash script with menu interface:
+  - Check Status (all servers, connected agents)
+  - Restart ngrok
+  - Open Dashboard
+  - View-Only link
+  - Choose Server for agents
+  - Make Mac the Server
+  - Find Server IP on network
+  - Install server auto-start (LaunchAgent)
+  - Deploy to VPS info
+
+========================================
+FILE 6: RemoteMonitor.bat (Windows)
+========================================
+
+Windows batch file with same menu as Mac version:
+  - Check Status
+  - Open Dashboard
+  - Choose Server
+  - Make PC the Server
+  - Find Server IP
+  - View-Only link
+  - Start/Stop local server
+
+========================================
+PASSWORD & SECURITY
+========================================
+
+Default credentials:
+  Username: puneet
+  Password: puneet12
+  Auth token (SHA256): 5c6d5a951a5566d43f1dca4552baf01e1f1551dfa27e5ff18e8ae7c049c3ca41
+
+To change password:
+  Edit auth.ini in %APPDATA%\SystemHelper\ on Windows
+  Or edit auth.ini next to server files on Mac
+  Format: username=puneet
+          password=puneet12
+
+========================================
+TROUBLESHOOTING
+========================================
+
+Agent not connecting:
+  1. Check agent.log in %APPDATA%\SystemHelper\
+  2. Check if Render is online: https://remote-monitor-1l0s.onrender.com
+  3. Check Windows Defender - may block unsigned .exe
+  4. Right-click .exe → Properties → Unblock
+
+Dashboard not loading:
+  1. Check server is running: http://localhost:3000
+  2. Check server.log for errors
+  3. Restart: RemoteMonitor.command → Option 2
+
+Remote control not working:
+  1. Click 🔒 → enter password
+  2. Click agent → View → Control
+  3. Move mouse over the screen image
+  4. Check agent.log for "Control: mousemove"
+
+Can't delete .exe on Windows:
+  Process is running. Create stop.bat with:
+  taskkill /f /im SystemHelper.exe
+  Then delete the .exe
+v5.11.0 - Final Version
+- Dark purple/blue gradient UI theme
+- Credit: Created by Puneet Upreti
+- Updated priority: Render → ngrok → tunnels → port forwarding

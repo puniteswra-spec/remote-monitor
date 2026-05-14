@@ -1,0 +1,9 @@
+*.tmp
+*.log
+*.pid
+*.lock
+.DS_Store
+node_modules/
+agent/urls.ini
+agent/tunnel.ini
+server/dashboard/urls.ini

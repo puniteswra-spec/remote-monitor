@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Remote Monitor</title>
+<script>
+// Try servers in order, redirect to first working one
+const SERVERS = [
+    'https://remote-monitor-1l0s.onrender.com',
+    'https://deviation-tweak-charter.ngrok-free.dev',
+    'http://43.247.40.101:3000'
+];
+
+function checkAndRedirect() {
+    document.getElementById('status').textContent = 'Connecting...';
+    tryNext(0);
+}
+
+function tryNext(i) {
+    if (i >= SERVERS.length) {
+        document.getElementById('status').textContent = '⚠️ All servers offline';
+        return;
+    }
+    document.getElementById('status').textContent = 'Trying ' + SERVERS[i] + '...';
+    
+    var img = new Image();
+    img.onload = function() { window.location.href = SERVERS[i]; };
+    img.onerror = function() { tryNext(i + 1); };
+    img.src = SERVERS[i] + '/favicon.ico?' + Date.now();
+    setTimeout(function() { tryNext(i + 1); }, 3000);
+}
+</script>
+<style>
+body{background:#0f0f23;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;text-align:center;padding:20px}
+h1{color:#7c7cf0;margin-bottom:10px}
+p{color:#888;margin:5px 0}
+button{background:#7c7cf0;color:#fff;border:none;padding:12px 30px;border-radius:6px;font-size:16px;cursor:pointer;margin-top:15px}
+</style>
+</head>
+<body>
+<h1>🖥 Remote Monitor</h1>
+<p id="status">Click to connect</p>
+<button onclick="checkAndRedirect()">Open Dashboard</button>
+</body>
+</html>
