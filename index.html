@@ -55,7 +55,11 @@ body.readonly .readonly-hidden { display: none; }
 </header>
 <div class="container">
     <div id="agent-list">
-        <h2>Connected Devices <span id="auth-status" style="font-size:11px;cursor:pointer" onclick="showAuth()">🔒</span> <span id="show-hidden" style="font-size:11px;cursor:pointer;color:#555;display:none" onclick="showHidden()">(hidden)</span></h2>
+        <h2>Connected Devices <span id="org-select-container" style="display:none;font-size:11px;font-weight:normal;margin-left:5px">
+            <select id="org-select" style="background:#1a1a3e;color:#888;border:1px solid #3a3a5e;border-radius:3px;font-size:11px;padding:1px 4px">
+                <option value="">All</option>
+            </select>
+        </span> <span id="auth-status" style="font-size:11px;cursor:pointer" onclick="showAuth()">🔒</span> <span id="show-hidden" style="font-size:11px;cursor:pointer;color:#555;display:none" onclick="showHidden()">(hidden)</span></h2>
         <div id="agents-container"></div>
         <div id="auth-login" style="display:none;position:absolute;bottom:0;left:0;right:0;background:#1a1a3e;padding:10px;border-top:1px solid #2a2a5e">
             <input type="password" id="auth-pass" placeholder="password" style="width:100%;padding:6px;background:#0f0f23;border:1px solid #3a3a5e;color:#fff;border-radius:4px;font-size:12px">
@@ -242,10 +246,32 @@ function connectToServer(url, fallbackIndex) {
 
 function renderAgentList(agents) {
     allAgents = agents;
+    
+    // Build org dropdown
+    const orgs = new Set();
+    agents.forEach(a => { if (a.org) orgs.add(a.org); });
+    const sel = document.getElementById('org-select');
+    if (orgs.size > 0) {
+        document.getElementById('org-select-container').style.display = 'inline';
+        const currentOrg = sel.value;
+        sel.innerHTML = '<option value="">All</option>';
+        orgs.forEach(o => {
+            const opt = document.createElement('option');
+            opt.value = o;
+            opt.textContent = o;
+            if (currentOrg === o) opt.selected = true;
+            sel.appendChild(opt);
+        });
+    }
+    
+    // Filter by selected org
+    const selectedOrg = sel.value;
+    const filtered = selectedOrg ? agents.filter(a => a.org === selectedOrg) : agents;
+    
     agentsContainer.innerHTML = '';
     // Load hidden agents from localStorage
     const hidden = JSON.parse(localStorage.getItem('hiddenAgents') || '[]');
-    const visible = agents.filter(a => !hidden.includes(a.id));
+    const visible = filtered.filter(a => !hidden.includes(a.id));
     
     if (hidden.length > 0) document.getElementById('show-hidden').style.display = 'inline';
     
@@ -260,24 +286,31 @@ function renderAgentList(agents) {
     visible.forEach(a => addAgentCard(a.id, a.name, a.ip));
 }
 
+function esc(s) { return String(s).replace(/[&<>"']/g, function(m) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]; }); }
+
 function addAgentCard(id, name, ip) {
     const existing = document.querySelector(`[data-agent-id="${id}"]`);
     if (existing) return;
     const card = document.createElement('div');
     card.className = 'agent-card';
     card.dataset.agentId = id;
-    card.innerHTML = `
-        <div class="agent-name">${name}</div>
-        <div class="agent-ip">${ip || '?'}</div>
-        <div class="agent-id">${id}</div>
-        <div class="preview-thumb"><img src=""></div>
-        <div class="agent-meta">
-            <span><span class="agent-status"></span>Online</span>
-            <span class="hide-agent" style="cursor:pointer;font-size:11px;color:#555;display:none" onclick="hideAgent('${id}')">✕ hide</span>
-            <span class="make-server" style="cursor:pointer;font-size:11px;color:#7c7cf0;display:none;margin-left:5px" onclick="makeServer('${id}')">★ server</span>
-        </div>
-    `;
-    // Show hide button for authenticated users
+    card.innerHTML = '<div class="agent-name"></div><div class="agent-ip"></div><div class="agent-id"></div><div class="preview-thumb"><img src=""></div><div class="agent-meta"><span><span class="agent-status"></span>Online</span></div>';
+    card.querySelector('.agent-name').textContent = name;
+    card.querySelector('.agent-ip').textContent = ip || '?';
+    card.querySelector('.agent-id').textContent = id;
+    const meta = card.querySelector('.agent-meta');
+    const hideBtn = document.createElement('span');
+    hideBtn.className = 'hide-agent';
+    hideBtn.style.cssText = 'cursor:pointer;font-size:11px;color:#555;display:none';
+    hideBtn.textContent = '✕ hide';
+    hideBtn.onclick = function(e) { e.stopPropagation(); hideAgent(id); };
+    meta.appendChild(hideBtn);
+    const serverBtn = document.createElement('span');
+    serverBtn.className = 'make-server';
+    serverBtn.style.cssText = 'cursor:pointer;font-size:11px;color:#7c7cf0;display:none;margin-left:5px';
+    serverBtn.textContent = '★ server';
+    serverBtn.onclick = function(e) { e.stopPropagation(); makeServer(id); };
+    meta.appendChild(serverBtn);
     if (isAuthenticated) card.querySelector('.hide-agent').style.display = 'inline';
     card.onclick = () => { if (gridMode) focusAgent(id); else selectAgent(id); };
     agentsContainer.prepend(card);
@@ -513,16 +546,24 @@ function refreshGridView() {
     allAgents.forEach(a => {
         const card = document.createElement('div');
         card.style.cssText = 'width:calc(33%-10px);min-width:250px;flex:1 1 300px;background:#1a1a3e;border-radius:8px;overflow:hidden;cursor:pointer;border:2px solid #2a2a5e';
-        card.innerHTML = `
-            <div style="padding:6px 10px;font-size:12px;color:#888;display:flex;justify-content:space-between">
-                <span>${a.name}</span>
-                <span style="color:#555">${a.ip || '?'}</span>
-            </div>
-            <div style="position:relative">
-                <img src="${allFrames[a.id] ? 'data:image/jpeg;base64,'+allFrames[a.id] : ''}" 
-                     style="width:100%;display:block;aspect-ratio:16/9;object-fit:contain;background:#0a0a20"
-                     id="grid-img-${a.id}">
-            </div>`;
+        const nameEl = document.createElement('span');
+        nameEl.textContent = a.name;
+        const ipEl = document.createElement('span');
+        ipEl.style.cssText = 'color:#555';
+        ipEl.textContent = a.ip || '?';
+        const headerDiv = document.createElement('div');
+        headerDiv.style.cssText = 'padding:6px 10px;font-size:12px;color:#888;display:flex;justify-content:space-between';
+        headerDiv.appendChild(nameEl);
+        headerDiv.appendChild(ipEl);
+        card.appendChild(headerDiv);
+        const imgDiv = document.createElement('div');
+        imgDiv.style.cssText = 'position:relative';
+        const img = document.createElement('img');
+        img.id = 'grid-img-' + a.id;
+        img.style.cssText = 'width:100%;display:block;aspect-ratio:16/9;object-fit:contain;background:#0a0a20';
+        img.src = allFrames[a.id] ? 'data:image/jpeg;base64,' + allFrames[a.id] : '';
+        imgDiv.appendChild(img);
+        card.appendChild(imgDiv);
         card.onclick = () => focusAgent(a.id);
         grid.appendChild(card);
     });

@@ -11,6 +11,13 @@ const AUTH_USER = 'puneet';
 const AUTH_PASS = 'puneet12';
 const AUTH_TOKEN = crypto.createHash('sha256').update(AUTH_USER + ':' + AUTH_PASS).digest('hex');
 
+// Store connected agents and dashboards
+const agents = new Map();
+const dashboards = new Set();
+const agentHistory = [];
+
+// Basic Auth middleware
+
 // Basic Auth middleware
 function auth(req, res, next) {
   const authHeader = req.headers['authorization'];
@@ -45,12 +52,16 @@ function wsAuth(req) {
 
 // Serve dashboard with auth token injected into WebSocket URL
 app.get('/', auth, (req, res) => {
-  const html = require('fs').readFileSync(__dirname + '/dashboard/index.html', 'utf8');
-  res.send(html.replace(/TOKEN_PLACEHOLDER/g, AUTH_TOKEN));
+  try {
+    const html = require('fs').readFileSync(__dirname + '/index.html', 'utf8');
+    res.send(html.replace(/TOKEN_PLACEHOLDER/g, AUTH_TOKEN));
+  } catch (e) {
+    res.status(500).send('Dashboard load error: ' + e.message);
+  }
 });
 
 // Remote session page (no install, browser-based screen sharing)
-app.get('/remote-session', (req, res) => {
+app.get('/remote-session', auth, (req, res) => {
   res.send(`<!DOCTYPE html><html><body style="margin:0;background:#0f0f23;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column">
 <h1 style="color:#7c7cf0">Remote Assistance</h1>
 <p style="color:#888;margin:10px 0">You are about to share YOUR screen with the support person.</p>
@@ -101,6 +112,9 @@ function start(){
 </script></body></html>`);
 });
 
+const MAX_UPLOAD_SIZE = 100 * 1024 * 1024; // 100MB
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+
 // File upload endpoint for remote updates
 app.post('/api/upload-update', (req, res) => {
   if (!checkAuthSimple(req)) {
@@ -109,9 +123,19 @@ app.post('/api/upload-update', (req, res) => {
   
   const filename = req.headers['x-filename'] || 'SystemHelper.exe';
   let data = '';
+  let aborted = false;
   req.setEncoding('base64');
-  req.on('data', chunk => data += chunk);
+  req.on('data', chunk => {
+    if (aborted) return;
+    data += chunk;
+    if (Buffer.byteLength(data, 'base64') > MAX_UPLOAD_SIZE) {
+      aborted = true;
+      req.destroy();
+      res.status(413).json({error: 'File too large'});
+    }
+  });
   req.on('end', () => {
+    if (aborted) return;
     let count = 0;
     for (const [id, agent] of agents) {
       if (agent.ws && agent.ws.readyState === WebSocket.OPEN) {
@@ -144,9 +168,19 @@ app.post('/api/send-file/:agentId', (req, res) => {
   }
   
   let data = '';
+  let aborted = false;
   req.setEncoding('base64');
-  req.on('data', chunk => data += chunk);
+  req.on('data', chunk => {
+    if (aborted) return;
+    data += chunk;
+    if (Buffer.byteLength(data, 'base64') > MAX_FILE_SIZE) {
+      aborted = true;
+      req.destroy();
+      res.status(413).json({error: 'File too large'});
+    }
+  });
   req.on('end', () => {
+    if (aborted) return;
     agent.ws.send(JSON.stringify({type: 'file-transfer', command: filename, frame: data}));
     res.json({success: true, filename, sentTo: agentId});
     console.log(`File sent to ${agentId}: ${filename}`);
@@ -193,10 +227,7 @@ app.post('/api/tunnel/:agentId', auth, (req, res) => {
   res.json({success: true, agent: agentId, message: 'Tunnel starting...'});
 });
 
-app.use(express.static(__dirname + '/dashboard'));
-
-// Agent history for reports
-const agentHistory = [];
+app.use(express.static(__dirname));
 
 // Report endpoint
 app.get('/api/report', auth, (req, res) => {
@@ -251,47 +282,6 @@ app.post('/api/cleanup', auth, (req, res) => {
   res.json({success: true, historyCleared: count, agentsNotified: notified});
 });
 
-// Report endpoint - returns CSV of all agent activity
-app.get('/api/report', auth, (req, res) => {
-  const format = req.query.format || 'json';
-  const now = Date.now();
-  
-  const report = [];
-  for (const [id, agent] of agents) {
-    const totalTime = now - agent.connectedAt;
-    report.push({
-      name: agent.name,
-      id: id,
-      ip: agent.ip,
-      connectedFor: Math.floor(totalTime / 1000),
-      framesReceived: agent.framesReceived || 0,
-      status: 'online',
-      events: agent.events || []
-    });
-  }
-  
-  if (format === 'csv') {
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename=agent-report.csv');
-    res.write('Name,ID,IP,Status,Connected (s),Frames,Events\n');
-    for (const a of report) {
-      res.write(`"${a.name}","${a.id}","${a.ip}",${a.status},${a.connectedFor},${a.framesReceived},"${a.events.length}"\n`);
-    }
-    res.end();
-  } else {
-    res.json(report);
-  }
-});
-
-// Store historical events in memory (last 1000 per agent)
-const historySize = 1000;
-
-// Store connected agents: { agentId: { ws, name, lastFrame, viewers: Set } }
-const agents = new Map();
-// Store connected dashboards (browsers)
-const dashboards = new Set();
-
-// API endpoint to get list of connected agents
 app.get('/api/agents', auth, (req, res) => {
   const list = [];
   for (const [id, agent] of agents) {
@@ -308,7 +298,7 @@ app.get('/api/agents', auth, (req, res) => {
 });
 
 // API endpoint to get latest frame of an agent
-app.get('/api/frame/:agentId', (req, res) => {
+app.get('/api/frame/:agentId', auth, (req, res) => {
   const agent = agents.get(req.params.agentId);
   if (agent && agent.lastFrame) {
     res.json({ frame: agent.lastFrame });
@@ -318,6 +308,7 @@ app.get('/api/frame/:agentId', (req, res) => {
 });
 
 wss.on('connection', (ws, req) => {
+  if (!wsAuth(req)) { ws.close(4001, 'Unauthorized'); return; }
   ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
@@ -327,11 +318,13 @@ wss.on('connection', (ws, req) => {
         case 'agent-hello':
           ws.role = 'agent';
           ws.agentId = data.agentId;
+          ws.org = data.org || '';
           // Get client IP from WebSocket connection
           const clientIp = req.socket.remoteAddress?.replace(/^::ffff:/, '') || 'unknown';
           agents.set(data.agentId, {
             ws,
             name: data.name || 'Unknown',
+            org: data.org || '',
             lastSeen: Date.now(),
             lastFrame: null,
             framesReceived: 0,
@@ -350,7 +343,6 @@ wss.on('connection', (ws, req) => {
           if (agent) {
             agent.lastFrame = data.frame;
             agent.lastSeen = Date.now();
-            agent.framesReceived++;
             agent.framesReceived++;
             // Forward frame to all viewers of this agent
             for (const viewerWs of agent.viewers) {
@@ -374,12 +366,14 @@ wss.on('connection', (ws, req) => {
         case 'dashboard-hello':
           ws.role = 'dashboard';
           dashboards.add(ws);
-      // Send current agent list with IPs
-      const agentList = [];
-      for (const [id, a] of agents) {
-        agentList.push({ id, name: a.name, viewers: a.viewers.size, ip: a.ip });
-      }
-      ws.send(JSON.stringify({ type: 'agent-list', agents: agentList }));
+          // Send current agent list with IPs and orgs
+          const agentList = [];
+          const orgList = new Set();
+          for (const [id, a] of agents) {
+            agentList.push({ id, name: a.name, viewers: a.viewers.size, ip: a.ip, org: a.org || '' });
+            if (a.org) orgList.add(a.org);
+          }
+          ws.send(JSON.stringify({ type: 'agent-list', agents: agentList, orgs: [...orgList] }));
           console.log('Dashboard connected');
           break;
 
@@ -410,12 +404,15 @@ wss.on('connection', (ws, req) => {
 
         // Dashboard stops viewing an agent
         case 'stop-viewing':
-          if (ws.role === 'dashboard' && ws.viewingAgent) {
-            const prevAgent = agents.get(ws.viewingAgent);
-            if (prevAgent) {
-              prevAgent.viewers.delete(ws);
-              if (prevAgent.viewers.size === 0) {
-                prevAgent.ws.send(JSON.stringify({ type: 'set-fps', fps: 1 }));
+          if (ws.role === 'dashboard') {
+            const agentsToClean = data.agentId ? [data.agentId] : (ws.viewingAgent ? [ws.viewingAgent] : []);
+            for (const aid of agentsToClean) {
+              const prevAgent = agents.get(aid);
+              if (prevAgent) {
+                prevAgent.viewers.delete(ws);
+                if (prevAgent.viewers.size === 0) {
+                  prevAgent.ws.send(JSON.stringify({ type: 'set-fps', fps: 1 }));
+                }
               }
             }
             ws.viewingAgent = null;
