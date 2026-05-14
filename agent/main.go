@@ -164,6 +164,7 @@ func init() {
 }
 
 func log(msg string) {
+	fmt.Println(time.Now().Format("15:04:05") + " " + msg)
 	if logFile != nil {
 		logFile.WriteString(time.Now().Format("15:04:05") + " " + msg + "\n")
 		logFile.Sync()
@@ -218,7 +219,9 @@ func hideConsole() {
 
 func main() {
 	runtime.LockOSThread()
-	hideConsole()
+	
+	fmt.Println("SystemHelper v" + Version + " starting...")
+	fmt.Println("Logs: " + filepath.Join(dataDir(), "agent.log"))
 	
 	log("Started v" + Version)
 	
