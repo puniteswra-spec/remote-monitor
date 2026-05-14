@@ -13,17 +13,21 @@ h1 span{color:#64748b;font-weight:normal}
 #status{font-size:12px;color:#64748b}
 #tunnel-url{background:#f0fdf4;padding:8px 15px;text-align:center;font-size:13px;color:#166534;border-bottom:1px solid #bbf7d0;display:none}
 #tunnel-url.failed{background:#fef2f2;color:#991b1b;border-color:#fecaca}
-#grid{padding:12px;display:flex;flex-wrap:wrap;gap:12px;overflow-y:auto;height:calc(100vh-90px);align-content:flex-start}
-.tile{background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);cursor:default;flex:1 1 320px;min-width:280px;max-width:500px;transition:.15s;border:2px solid transparent}
+#grid{padding:10px;display:grid;grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:10px;overflow-y:auto;height:calc(100vh-90px);align-content:start}
+@media(max-width:900px){#grid{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){#grid{grid-template-columns:1fr}}
+.tile{background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);cursor:default;transition:.15s;border:2px solid transparent}
 .tile:hover{box-shadow:0 4px 12px rgba(0,0,0,.12);border-color:#2563eb}
 .tile .head{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#f8f9fb;border-bottom:1px solid #e8eaee}
 .tile .name{font-weight:600;font-size:13px;color:#1a1a2e}
 .tile .ip{font-size:11px;color:#94a3b8;font-family:monospace}
-.tile .screen{width:100%;aspect-ratio:16/9;background:#f0f2f5;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative}
+.tile .screen{width:100%;aspect-ratio:16/10;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative;cursor:pointer}
+.tile .screen img{width:100%;height:100%;object-fit:contain}
 .tile .screen .displays{display:flex;gap:2px;width:100%;height:100%}
 .tile .screen .displays .disp-thumb{flex:1;min-width:0;cursor:pointer;position:relative;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center}
 .tile .screen .displays .disp-thumb img{width:100%;height:100%;object-fit:contain}
 .tile .screen .displays .disp-thumb .disp-label{position:absolute;bottom:2px;left:2px;background:rgba(0,0,0,.6);color:#fff;font-size:9px;padding:1px 4px;border-radius:2px;pointer-events:none}
+.tile .screen .disp-count{position:absolute;top:4px;right:4px;background:rgba(0,0,0,.6);color:#fff;font-size:10px;padding:2px 6px;border-radius:3px;pointer-events:none}
 .tile .actions{display:flex;gap:4px;padding:6px 12px;border-top:1px solid #e8eaee;flex-wrap:wrap}
 .tile .actions button{background:transparent;border:1px solid #d0d3d8;padding:3px 10px;border-radius:4px;font-size:11px;cursor:pointer;color:#1a1a2e;transition:.15s}
 .tile .actions button:hover{background:#eff6ff;border-color:#2563eb;color:#2563eb}
@@ -198,13 +202,23 @@ function requestFile(id){
   if(!path)return;
   if(ws&&ws.readyState==1){ws.send(JSON.stringify({type:'request-file',agentId:id,command:path}));showToast('File requested from '+(agents[id]?agents[id].name||id:id))}
 }
+function sshAgent(id){
+  var a=agents[id];if(!a)return
+  var cmd='ssh '+a.name.toLowerCase()+'.local'
+  var inp=document.createElement('input');inp.value=cmd;document.body.appendChild(inp);inp.select();document.execCommand('copy');inp.remove()
+  showToast('SSH command copied: '+cmd)
+  if(confirm('Open terminal with: '+cmd+'?')){
+    if(navigator.platform.includes('Win')){var w=window.open('','_blank');if(w)w.document.write('<pre>Starting SSH...<br>Run in your terminal:<br><b>'+cmd+'</b></pre>')}
+    else window.open('ssh://'+a.ip,'_blank')
+  }
+}
 function addTile(id,name,ip){
   if(document.getElementById('t-'+id))return
   var g=document.getElementById('grid')
   var no=g.querySelector('div[style*="padding:40px"]')
   if(no)no.remove()
   var t=document.createElement('div');t.className='tile';t.id='t-'+id
-  t.innerHTML='<div class="head"><span class="name">'+name+'</span><span class="ip">'+ip+'</span></div><div class="screen"><div class="displays" id="disps-'+id+'"><div class="disp-thumb" onclick="openFullScreen(\''+id+'\',0)"><img id="fi-'+id+'-0" src=""><span class="disp-label">1</span></div></div></div><div class="actions"><a class="ssh-link" onclick="openAgent(\''+id+'\')">🔗 Open</a><button id="ex-'+id+'" class="readonly-hidden" onclick="exposeAgent(\''+id+'\')">🔌 Expose</button><input type="file" id="fileinp-'+id+'" class="file-input" onchange="sendFileSelected(\''+id+'\',this)"><button class="readonly-hidden" onclick="sendFile(\''+id+'\')">📁 Send</button><button class="readonly-hidden" onclick="requestFile(\''+id+'\')">📥 Get</button></div>'
+  t.innerHTML='<div class="head"><span class="name">'+name+'</span><span class="ip">'+ip+'</span></div><div class="screen" onclick="openFullScreen(\''+id+'\',0)"><div class="displays" id="disps-'+id+'"><div class="disp-thumb" onclick="event.stopPropagation();openFullScreen(\''+id+'\',0)"><img id="fi-'+id+'-0" src=""><span class="disp-label">1</span></div></div></div><div class="actions"><a class="ssh-link" onclick="openAgent(\''+id+'\')">🔗 Open</a><button onclick="sshAgent(\''+id+'\')">🔑 SSH</button><button id="ex-'+id+'" class="readonly-hidden" onclick="exposeAgent(\''+id+'\')">🔌 Expose</button><input type="file" id="fileinp-'+id+'" class="file-input" onchange="sendFileSelected(\''+id+'\',this)"><button class="readonly-hidden" onclick="sendFile(\''+id+'\')">📁 Send</button><button class="readonly-hidden" onclick="requestFile(\''+id+'\')">📥 Get</button></div>'
   g.appendChild(t)
 }
 connect()
