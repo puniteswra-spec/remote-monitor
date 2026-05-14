@@ -321,6 +321,9 @@ wss.on('connection', (ws, req) => {
           ws.org = data.org || '';
           // Get client IP from WebSocket connection
           const clientIp = req.socket.remoteAddress?.replace(/^::ffff:/, '') || 'unknown';
+          // Parse status data from agent-hello - prefer agent-reported IP
+          const helloData = data.data || {};
+          const agentIP = helloData.agentIP || clientIp;
           agents.set(data.agentId, {
             ws,
             name: data.name || 'Unknown',
@@ -329,12 +332,12 @@ wss.on('connection', (ws, req) => {
             lastFrame: null,
             framesReceived: 0,
             viewers: new Set(),
-            ip: clientIp,
+            ip: agentIP,
             connectedAt: Date.now(),
             events: [{type: 'connected', time: Date.now()}]
           });
-          console.log(`Agent connected: ${data.name} (${data.agentId}) from ${clientIp}`);
-          broadcastToDashboards({ type: 'agent-connected', agentId: data.agentId, name: data.name, ip: clientIp });
+          console.log(`Agent connected: ${data.name} (${data.agentId}) from ${agentIP} (conn: ${clientIp})`);
+          broadcastToDashboards({ type: 'agent-connected', agentId: data.agentId, name: data.name, ip: agentIP });
           // Auto-add existing dashboards as viewers of this new agent
           for (const dWs of dashboards) {
             if (dWs.readyState === WebSocket.OPEN) {
