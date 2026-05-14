@@ -1,103 +1,63 @@
-# Remote Desktop Sharing Application
+# SystemHelper — Remote Monitor & Control v6.0.0
 
-A WebRTC-based screen sharing and remote control application that allows users to share their screen and control remote computers through a browser.
+Windows agent for remote desktop viewing and control. Agents connect to a central server (Node.js on Mac/cloud), send screen captures, and receive mouse/keyboard commands.
+
+## Architecture
+
+- **Agent** (`agent/main.go`) — Go binary running on each Windows PC. Captures screen, connects via WebSocket, receives control commands.
+- **Server** (`server/server.js`) — Node.js relay. Forwards frames from agents to dashboard viewers, forwards control commands from dashboard to agents.
+- **Dashboard** (embedded in both agent and server) — Web UI showing connected agents, live screen view, remote control.
 
 ## Features
 
-- Screen sharing directly in the browser
-- Remote control capabilities
-- Secure peer-to-peer connections
-- No installation required for clients
-- Cross-platform compatibility
+- Multi-display support — shows all monitors as clickable thumbnails
+- Remote control (mouse move, click, keyboard)
+- View-only mode for external access (no control)
+- File transfer to any agent (saves to `C:\ProgramData\SystemHelper\received\`)
+- Remote update — push new .exe from dashboard
+- Tunnel (Expose) — make any agent accessible remotely via localhost.run or bore.pub
+- Server mode — any agent can become a server when cloud is unavailable
+- Activity logging (tracks idle time, uptime)
+- Auto-start via Windows Registry watchdog
+- Fallback servers — Render.com, ngrok, Cloudflare, direct IP
 
-## Technologies Used
+## Build
 
-- **Frontend**: HTML, CSS, JavaScript (WebRTC)
-- **Backend**: Node.js, WebSocket
-- **Real-time Communication**: WebRTC for peer-to-peer screen sharing
-- **Signaling**: WebSocket for connection establishment
+```bash
+cd agent
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o SystemHelper.exe .
+```
 
-## Quick Start (Desktop)
+## Deploy
 
-1. **Start the server**:
-   Double-click the `RemoteDesktopLauncher` file on your desktop and type:
-   ```
-   ./RemoteDesktopLauncher start
-   ```
+Copy `SystemHelper.exe` to each Windows PC and run. First run creates config at `%APPDATA%\SystemHelper\`.
 
-2. **Access the application**:
-   Open your browser and go to: `http://localhost:3000`
+## Server (Mac/cloud)
 
-3. **Share your screen**:
-   - Click "Share My Screen"
-   - Grant screen sharing permissions when prompted
-   - Share the Room ID or generated link with others
+```bash
+cd server
+npm install
+node server.js
+```
 
-4. **Stop the server**:
-   Double-click the `RemoteDesktopLauncher` file and type:
-   ```
-   ./RemoteDesktopLauncher stop
-   ```
+Dashboard: `http://localhost:3000` (auth: puneet / puneet12)
 
-## Prerequisites
+## Commands
 
-- Node.js (version 12 or higher)
-- Modern web browser (Chrome, Firefox, Edge, Safari)
+| Flag | Description |
+|------|-------------|
+| `--server` | Run as server only (no cloud connection) |
+| `--org <name>` | Set organization name |
+| `--internal` | Internal mode (no cloud, LAN only) |
+| `--use <name>` | Use only specific server (render, ngrok, etc.) |
 
-## Installation
+## Dashboard Messages
 
-1. Clone or download this repository
-2. Navigate to the backend directory:
-   ```
-   cd backend
-   ```
-
-3. Install dependencies:
-   ```
-   npm install
-   ```
-
-## Usage
-
-1. Start the signaling server:
-   ```
-   npm start
-   ```
-   The server will start on `http://localhost:3000`
-
-2. Open your browser and go to `http://localhost:3000`
-
-3. Choose your role:
-   - **Share My Screen**: Start sharing your screen
-   - **View Remote Screen**: Connect to view someone else's screen
-
-4. As a host:
-   - Click "Share My Screen"
-   - Grant permission to share your screen when prompted
-   - Share the generated room link with viewers
-
-5. As a viewer:
-   - Click "View Remote Screen"
-   - Enter the room ID or use the shared link
-   - Wait for host approval
-   - View and optionally control the remote screen
-
-## How It Works
-
-1. The signaling server coordinates connection establishment between peers
-2. Peers exchange connection information through WebSocket
-3. Once connected, screen sharing happens directly between browsers via WebRTC
-4. Control commands are sent through WebRTC DataChannels
-
-## Security
-
-- All WebRTC connections are encrypted
-- Host must approve each viewer connection
-- No media is stored on the server
-- Communication happens directly between peers after initial handshake
-
-## Limitations
-
-- Both parties must be able to establish a WebRTC connection
-- Network firewalls may interfere with peer-to-peer connections
-- Remote control functionality requires additional setup for executing commands on the host machine
+| Type | Direction | Purpose |
+|------|-----------|---------|
+| `become-server` | Dashboard → Agent | Start tunnel + save server preference |
+| `push-update` | Dashboard → Agent | Replace .exe remotely |
+| `file-transfer` | Dashboard → Agent | Send file to agent |
+| `start-tunnel` | Dashboard → Agent | Start tunnel for direct access |
+| `control` | Dashboard → Agent | Mouse/keyboard command |
+| `set-server-preference` | Dashboard → Agent | Flag PC as server on next restart |

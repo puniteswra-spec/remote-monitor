@@ -1,118 +1,128 @@
 CODE REVIEW DOCUMENT
 ====================
-Remote Monitor & Control System v5.5.1
+Remote Monitor & Control System v6.0.0
 
 ========================================
 FILE 1: agent/main.go (Go - 6.7MB .exe)
 ========================================
 
-PURPOSE: Windows agent executable. Captures screen, sends to server, 
-receives control commands.
+PURPOSE: Windows agent executable. Captures all displays, sends to server,
+receives control commands, supports tunnel expose, file transfer, push updates.
 
 KEY STRUCTURES:
 
 Message struct - JSON message format for WebSocket communication
-  Type: string - message type (agent-hello, agent-frame, control, etc.)
+  Type: string - message type
   AgentId: string - unique identifier for this agent
   Name: string - computer hostname
   Frame: string - base64-encoded JPEG screenshot
   Fps: int - frames per second setting
-  Command: string - control command (mousemove, click, keypress)
+  Display: int - display index (0 = primary, 1+ = secondary)
+  Command: string - command or filename
   Params: map[string]string - control parameters (x, y, key)
 
 KEY FUNCTIONS:
 
 main() - Entry point
-  - Checks for --server flag
+  - Checks for --server flag to run in server mode
   - Prevents duplicate instances (lock file)
   - Tries to start local server (port 3000)
-  - ALSO connects to cloud/server as agent
+  - Also connects to cloud/server as agent
   - Infinite reconnect loop (3 second delay)
 
-runServer() - Local server mode
+runServer() - Local server mode (agent acts as server/relay)
   - HTTP server on port 3000
   - WebSocket relay for agents
-  - Serves embedded dashboard HTML
-  - Tracks all connected agents
-  - Forwards frames from agents to viewers
-  - Forwards control commands to agents
+  - Serves embedded dashboard HTML (grid tile layout, light theme)
+  - Tracks all connected agents with IPs
+  - Forwards frames (with display index) to viewers
+  - Forwards control, become-server, file-transfer, request-file messages
   - Starts embedded agent for this PC too
 
 connect() - Connect to cloud server as agent
-  - Reads urls.ini for custom URLs
+  - Reads urls.ini for custom server URLs
   - Tries each URL in order until one connects
   - Sends agent-hello registration
   - Runs goroutine to receive messages
-  - Sends frames in loop (at configured FPS)
-  - Handles: set-fps, control, push-update, switch-server, file-transfer
+  - Sends frames for ALL displays in loop (at configured FPS)
+  - Handles: set-fps, control, push-update, switch-server,
+    file-transfer, request-file, become-server, start-tunnel, cleanup-logs
 
-capture() - Screen capture
+captureDisplay(n) - Screen capture for specific display
   - Uses github.com/kbinani/screenshot
-  - Captures primary display
+  - Captures display n by index
   - Encodes as JPEG quality 50
   - Returns base64 string
 
-executeControl() - Execute remote control commands
-  - mousemove: moves mouse to percentage coordinates
-  - click: moves mouse and clicks (left/right)
-  - keypress: simulates keyboard key
+captureFrames() - Capture all displays
+  - Iterates all displays via numDisplays()
+  - Returns slice of Message{Frame, Display} for each display
+  - Used in both cloud and local frame loops
 
-Windows API calls (SendInput):
-  - makeMouseInput() - builds INPUT struct for mouse events
-  - makeKeyboardInput() - builds INPUT struct for keyboard events
-  - Uses raw byte buffers for correct struct alignment
+Multi-Display Support:
+  - numDisplays() - queries total display count
+  - captureDisplay(n) - captures specific display
+  - captureFrames() - captures all displays at once
+  - Message.Display field tracks which display a frame belongs to
+  - Both frame loops (cloud and embedded) use captureFrames()
+  - Server and dashboard forward Display field to viewers
 
-setupAutostart() - Windows auto-start
-  - Creates watchdog.bat next to .exe
-  - Sets registry RUN key to watchdog.bat
-  - Writes all other files to %APPDATA%\SystemHelper\
+Tunnel/Expose:
+  - startTunnel() - starts bore tunnel for remote access
+  - become-server handler - saves server preference + starts tunnel
+  - Tunnel status reported back to dashboard via WebSocket
 
-preventDuplicate() - Single instance enforcement
-  - Writes PID to agent.lock file
-  - Reads old PID from lock file
-  - Kills old process if found
-  - New .exe replaces old automatically
+File Transfer:
+  - handleFileTransfer() - saves received files to C:\ProgramData\SystemHelper\received\
+  - receivedDir() returns "C:\\ProgramData\\SystemHelper\\received"
+  - handleFileRequest() - reads a file from agent and sends back via WebSocket
+  - Old received folder cleaned on startup
 
-handleRemoteUpdate() - Receive new .exe from dashboard
-  - Receives base64 encoded .exe
-  - Saves to temp file
-  - Replaces current .exe
-  - Restarts with new version
+Push Updates:
+  - handleRemoteUpdate() - receives base64 .exe, saves to temp, replaces running .exe
+  - Restarts with new version via os.Executable() replacement
+  - Called with correct (filename, data) parameter order
 
-handleFileTransfer() - Receive files from dashboard
-  - Saves to received/ folder in data directory
+hideCmd() - Hide windows popups
+  - Defined in exec_windows.go (HideWindow: true, build tag: windows)
+  - Defined in exec_other.go (no-op, non-windows builds)
+  - Called on ALL 6 exec.Command() operations:
+    1. handleRemoteUpdate (new .exe start)
+    2. preventDuplicate (taskkill old process)
+    3. cleanTempFiles (cmd cleanup commands)
+    4. startTunnel (SSH tunnel)
+    5. PowerShell download (bore tunnel setup)
+    6. bore tunnel executable
 
-Activity logging:
-  - startActivityLogger() - goroutine tracking idle time
-  - getIdleSeconds() - Windows API GetLastInputInfo
-  - Logs INACTIVE (>5 min idle) and ACTIVE (resumed)
-  - Logs uptime every hour
-  - Writes to activity.log in data directory
-
-cleanTempFiles() - Startup cleanup
-  - Windows Temp folder
-  - Browser cache
-  - DNS cache
-  - Prefetch files
-  - Disk Cleanup
+Dashboard Features (embedded):
+  - Light theme (#f0f2f5 background, #2563eb accent, white cards)
+  - Grid layout with tiles (flex-wrap, 320px min, no sidebar)
+  - Each tile: hostname, IP, screen thumbnails (per display), Open/Expose buttons
+  - Multi-display thumbnails with click-to-expand full-screen modal
+  - Open button → http://agent-ip:3000 in new tab
+  - Expose button → become-server message (start tunnel)
+  - File transfer: Send files to agent, request files from agent
+  - Push Update: select .exe to push to all agents
 
 SECURITY:
   - Auth token embedded in WebSocket URL
   - Password protection on dashboard
-  - All files in %APPDATA% (hidden from user)
-  - Single instance enforcement
+  - All files in %APPDATA%\SystemHelper\ (hidden from user)
+  - File saves to C:\ProgramData\SystemHelper\received\ (not Downloads)
+  - Single instance enforcement via lock file
+  - View-only mode on server dashboard until authenticated
 
 ========================================
 FILE 2: server/server.js (Node.js)
 ========================================
 
-PURPOSE: Central server. Runs on Mac OR Render.com. Relays 
-communication between agents and dashboard.
+PURPOSE: Central relay server. Runs on Mac, Windows, or Render.com.
+Relays communication between agents and dashboards.
 
 KEY VARIABLES:
-  agents: Map of connected agents (agentId → {ws, name, lastFrame, ...})
+  agents: Map of connected agents (agentId -> {ws, name, lastFrame, ip, ...})
   dashboards: Set of dashboard WebSocket connections
-  AUTH_USER/AUTH_PASS: Login credentials
+  AUTH_USER/AUTH_PASS: Login credentials (puneet/puneet12)
   AUTH_TOKEN: SHA256 hash of credentials
   agentHistory: Array of disconnected agent sessions
 
@@ -121,119 +131,91 @@ HTTP ENDPOINTS:
 GET / - Dashboard page
   - Auth required (Basic Auth)
   - Injects AUTH_TOKEN into HTML for WebSocket auth
-  
-GET /api/agents - List connected agents
-  - Auth required
-  - Returns JSON array of {id, name, ip, connected, viewers}
-  
-GET /api/report - Agent activity report
-  - Auth required
-  - ?format=csv for CSV download
-  - Returns JSON {online: [...], history: [...]}
-  
+  - Serves light-themed grid dashboard
+
+GET /remote-session - Browser-based screen sharing
+
 POST /api/upload-update - Push new .exe to all agents
   - Auth required
-  - Sends push-update to all connected agents
-  
+  - Reads base64 body, forwards push-update to all connected agents
+  - X-Filename header for the .exe filename
+
 POST /api/send-file/:agentId - Send file to specific agent
   - Auth required
-  - Header: X-Filename
-  - Sends file-transfer to that agent
-  
+  - Header: X-Filename, Body: base64-encoded file data
+  - Forwards file-transfer to target agent
+  - Returns {success, filename, sentTo}
+
 POST /api/switch-server - Tell agents to switch server
   - Auth required
   - Header: X-Server-URL
-  - Sends switch-server to all agents
+
+POST /api/make-server/:agentId - Make a PC the preferred server
+  - Sends become-server to target agent
+
+POST /api/cleanup - Clear all logs and history
+
+GET /api/agents - List connected agents (JSON)
+GET /api/report - Activity report (JSON or CSV)
+GET /api/frame/:agentId - Get latest frame of agent
 
 WebSocket Message Handlers:
 
-agent-hello:
-  - Registers agent in agents Map
-  - Tracks: name, IP, connection time, events array
-  - Broadcasts agent-connected to dashboards
-
-agent-frame:
-  - Updates agent's lastFrame
-  - Increments framesReceived counter
-  - Forwards frame to all dashboard viewers
-
-dashboard-hello:
-  - Registers dashboard
-  - Sends current agent list
-
-view-agent:
-  - Adds dashboard to agent's viewers
-  - Sends current frame immediately
-  - Notifies agent to increase FPS to 10
-
-stop-viewing:
-  - Removes dashboard from agent's viewers
-  - If no viewers left, sets FPS back to 1
-
-control:
-  - Forwards control command to specific agent
-
-agent-log:
-  - Logs message from agent
-
-Close handler:
-  - Saves agent to history before deleting
-  - Broadcasts agent-disconnected
-  - Cleans up dashboard subscriptions
+agent-hello: Register agent, track name/IP/org/browser session
+agent-frame: Forward frame (with display index) to viewers
+dashboard-hello: Send agent list to dashboard
+view-agent: Subscribe dashboard to agent's frame stream
+stop-viewing: Unsubscribe dashboard from agent
+control: Forward control commands to agent
+request-file: Forward file request from dashboard to agent
+file-response: Forward file response from agent to dashboards
 
 SECURITY:
   - Basic Auth on all HTTP endpoints
-  - WebSocket accepts all connections (agents need no auth)
+  - WebSocket accepts connections with token or Basic Auth
   - Password: puneet/puneet12
+  - Dashboard shows view-only until password entered
 
 ========================================
-FILE 3: dashboard/index.html
+FILE 3: server/dashboard/index.html
 ========================================
 
-PURPOSE: Web-based user interface. Single HTML file with embedded CSS and JS.
+PURPOSE: Web-based dashboard UI. Light-themed grid layout with
+agent tiles showing multi-display previews and action buttons.
 
 FEATURES:
 
-Agent List (left sidebar):
-  - Connected Devices header with 🔒 lock icon
-  - Each agent shows: name, IP address, agent ID
-  - Click to select, View to start streaming
-  - Hide button (✕ hide) to remove from view
+View-Only Mode:
+  - On first load, shows password gate overlay
+  - Without password: view-only mode (can see screens, Open links only)
+  - With password: full mode (Expose, Send File, Get File, Update All)
+  - 🔓 badge shows when unlocked
 
-Screen Viewer (main area):
-  - Live screen display from selected agent
-  - Control button (hidden until authenticated)
-  - Send File button (visible during control)
-  - Stop button to end viewing
+Agent Tile Grid (no sidebar):
+  - Each tile shows: hostname, IP address, display thumbnails
+  - Multi-display: each display shown as thumbnail in a flex row
+  - Click a display thumbnail → full-screen modal with live stream
+  - Move mouse to live-update the full-screen view
 
-Hidden Authentication:
-  - 🔒 icon in sidebar header
-  - Click → password field appears at bottom
-  - Enter puneet12 → Control enabled
-  - Without auth: view-only mode
+Tile Actions:
+  - Open (🔗) → http://agent-ip:3000 in new tab
+  - Expose (🔌) → send become-server → start tunnel
+  - Send (📁) → select local file → upload via /api/send-file
+  - Get File (📥) → prompt for agent file path → request via WebSocket
 
-Auto-Failover:
-  - If current server disconnects
-  - Tries backup servers in order:
-    1. Render.com
-    2. ngrok
-    3. Port forwarding
-  - Updates badge to show current server
+Header Actions:
+  - Update All (⬆️) → select .exe → push to all agents via /api/upload-update
+  - Report (📊) / CSV (⬇) → activity report
+  - Clear Logs (🗑️) → cleanup endpoint
+  - 🔓/🔒 → lock/unlock dashboard
 
-Server Badge:
-  - Shows which server you're connected to
-  - 🟢 Render, 🟡 ngrok, 🔵 Local, 🟠 Cloudflare
+Tunnel Status:
+  - Green bar when tunnel active with clickable URL
+  - Red bar when tunnel fails
 
-KEY JS FUNCTIONS:
-
-connect() / connectToServer() - WebSocket connection
-renderAgentList() - Display agents (filters hidden)
-addAgentCard() - Create agent HTML element
-hideAgent() - Remove agent from view (localStorage)
-showHidden() - Restore hidden agents
-showAuth() / tryAuth() - Authentication
-enableControl() / disableControl() - Control mode
-onMouseMove() / onMouseClick() / onKeyDown() - Send control commands
+Fallback Servers:
+  - Render.com → ngrok → VPS IP
+  - Tries each in order on disconnect
 
 ========================================
 FILE 4: render-deploy/server.js
@@ -302,17 +284,35 @@ Dashboard not loading:
   2. Check server.log for errors
   3. Restart: RemoteMonitor.command → Option 2
 
-Remote control not working:
-  1. Click 🔒 → enter password
-  2. Click agent → View → Control
-  3. Move mouse over the screen image
-  4. Check agent.log for "Control: mousemove"
+Multi-display not showing:
+  1. Agent captures all displays automatically
+  2. Check numDisplays() in agent log
+  3. Each display appears as a thumbnail in the agent tile
+  4. Click a thumbnail for full-screen view
+
+Expose/Tunnel not working:
+  1. Check agent has internet access
+  2. Tunnel URL appears in green bar on dashboard
+  3. If red bar, check agent.log for tunnel errors
+
+File transfer not working:
+  1. Files sent to agent save in C:\ProgramData\SystemHelper\received\
+  2. Files requested from agent get downloaded to browser
+  3. Check agent.log for "File received" or "File sent" messages
 
 Can't delete .exe on Windows:
   Process is running. Create stop.bat with:
   taskkill /f /im SystemHelper.exe
   Then delete the .exe
-v5.11.0 - Final Version
-- Dark purple/blue gradient UI theme
+
+v6.0.0 - Current Version
+- Light theme (#f0f2f5) - not dark
+- Grid tile layout (no sidebar)
+- Multi-display capture and preview
+- Tunnel/Expose with become-server
+- File transfer to C:\ProgramData\SystemHelper\received\
+- Push-update remote .exe replacement
+- No popups (hideCmd on all exec.Command)
+- View-only mode with password unlock
+- File send and file request from dashboard
 - Credit: Created by Puneet Upreti
-- Updated priority: Render → ngrok → tunnels → port forwarding
