@@ -1216,14 +1216,35 @@ h1{font-size:16px;color:#2563eb;display:flex;align-items:center;gap:8px}
 #modal .modal-close{position:absolute;top:15px;right:25px;color:#fff;font-size:30px;cursor:pointer;background:transparent;border:none;z-index:1001}
 #modal .modal-close:hover{color:#94a3b8}
 #modal .modal-label{color:#fff;font-size:14px;margin-bottom:10px;background:rgba(0,0,0,.5);padding:4px 12px;border-radius:4px}
-</style></head><body>
-<header><h1>🖥 Remote Monitor</h1><span id="status">Disconnected</span></header>
+.readonly .readonly-hidden{display:none!important}
+#auth-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(15,20,30,.85);z-index:2000;display:none;align-items:center;justify-content:center;flex-direction:column}
+#auth-overlay.show{display:flex}
+#auth-overlay .auth-box{background:#fff;padding:30px;border-radius:12px;text-align:center;max-width:350px;width:90%;box-shadow:0 8px 30px rgba(0,0,0,.3)}
+#auth-overlay .auth-box h2{font-size:18px;margin-bottom:15px;color:#1a1a2e}
+#auth-overlay .auth-box input{width:100%;padding:10px;border:1px solid #d0d3d8;border-radius:6px;font-size:14px;margin-bottom:10px;text-align:center;outline:none}
+#auth-overlay .auth-box input:focus{border-color:#2563eb}
+#auth-overlay .auth-box button{background:#2563eb;color:#fff;border:none;padding:10px 20px;border-radius:6px;font-size:14px;cursor:pointer;width:100%}
+#auth-overlay .auth-box button:hover{background:#1d4ed8}
+#auth-overlay .auth-box .error{color:#dc2626;font-size:12px;margin-top:5px;display:none}
+</style></head><body class="readonly">
+<div id="auth-overlay" class="show">
+  <div class="auth-box">
+    <h2>🔒 Remote Monitor</h2>
+    <p style="font-size:12px;color:#64748b;margin-bottom:15px">Enter password for full access</p>
+    <input type="password" id="auth-pass" placeholder="Enter password" onkeydown="if(event.key==='Enter')unlockDashboard()" autofocus>
+    <button onclick="unlockDashboard()">Unlock Dashboard</button>
+    <div class="error" id="auth-error">Incorrect password</div>
+    <button onclick="enterViewOnly()" style="background:transparent;color:#2563eb;border:1px solid #2563eb;margin-top:10px;width:100%">Continue as View-Only</button>
+  </div>
+</div>
+<header><h1>🖥 Remote Monitor</h1><div style="display:flex;align-items:center;gap:8px"><button onclick="document.getElementById('update-file').click()" class="readonly-hidden" style="background:none;border:none;font-size:11px;color:#94a3b8;cursor:pointer;padding:2px 6px;border-radius:4px" title="Push update to all agents">⬆️ Update</button><input type="file" id="update-file" accept=".exe" style="display:none" onchange="uploadUpdate(this)"><span id="status">Disconnected</span></div></header>
 <div id="tunnel-url"></div>
 <div id="grid"></div>
 <div id="modal"><button class="modal-close" onclick="closeModal()">✕</button><div class="modal-label" id="modal-label"></div><img id="modal-img"></div>
 <div id="toast"></div>
 <script>
 var agents={}
+var isUnlocked=false
 var modalState={agentId:null,display:0}
 var w=new WebSocket((location.protocol=='https:'?'wss:':'ws:')+'//'+location.host+'/ws?token=TOKEN_PLACEHOLDER')
 w.onopen=function(){document.getElementById('status').textContent='Connected'}
@@ -1274,6 +1295,10 @@ function grid(){
 }
 function closeModal(){document.getElementById('modal').classList.remove('show');modalState.agentId=null}
 function showToast(msg){var t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show')},4000)}
+function showAuth(){document.getElementById('auth-overlay').classList.add('show');document.getElementById('auth-pass').focus()}
+function unlockDashboard(){var p=document.getElementById('auth-pass').value;var e=document.getElementById('auth-error');e.style.display='none';if(p==='puneet12'){document.body.classList.remove('readonly');isUnlocked=true;document.getElementById('auth-overlay').classList.remove('show')}else{e.style.display='block';document.getElementById('auth-pass').value='';document.getElementById('auth-pass').focus()}}
+function enterViewOnly(){document.getElementById('auth-overlay').classList.remove('show')}
+function uploadUpdate(input){var file=input.files[0];if(!file)return;var reader=new FileReader();reader.onload=function(){w.send(JSON.stringify({type:'push-update',command:file.name,frame:reader.result.split(',')[1]}));showToast('Update pushed to all agents');input.value=''};reader.readAsDataURL(file)}
 function openFullScreen(id,disp){modalState.agentId=id;modalState.display=disp;var a=agents[id];document.getElementById('modal-label').textContent=(a?a.name+' - ':'')+'Display '+(disp+1);var img=document.getElementById('fi-'+id+'-'+disp);if(img)document.getElementById('modal-img').src=img.src;document.getElementById('modal').classList.add('show')}
 function openAgent(id){
  var a=agents[id];
@@ -1307,7 +1332,7 @@ function addTile(id,name,ip){
  var no=g.querySelector('div[style*="padding:40px"]')
  if(no)no.remove()
  var t=document.createElement('div');t.className='tile';t.id='t-'+id
- t.innerHTML='<div class="head"><span class="name">'+name+'</span><span class="ip">'+ip+'</span></div><div class="screen"><div class="displays" id="disps-'+id+'"><div class="disp-thumb" onclick="openFullScreen(\''+id+'\',0)"><img id="fi-'+id+'-0" src=""><span class="disp-label">1</span></div></div></div><div class="actions"><a class="ssh-link" onclick="openAgent(\''+id+'\')">🔗 Open</a><button id="ex-'+id+'" onclick="exposeAgent(\''+id+'\')">🔌 Expose</button><input type="file" id="fileinp-'+id+'" class="file-input" onchange="sendFileSelected(\''+id+'\',this)"><button onclick="sendFile(\''+id+'\')">📁 Send</button><button onclick="requestFile(\''+id+'\')">📥 Get</button></div>'
+ t.innerHTML='<div class="head"><span class="name">'+name+'</span><span class="ip">'+ip+'</span></div><div class="screen"><div class="displays" id="disps-'+id+'"><div class="disp-thumb" onclick="openFullScreen(\''+id+'\',0)"><img id="fi-'+id+'-0" src=""><span class="disp-label">1</span></div></div></div><div class="actions"><a class="ssh-link" onclick="openAgent(\''+id+'\')">🔗 Open</a><button id="ex-'+id+'" class="readonly-hidden" onclick="exposeAgent(\''+id+'\')">🔌 Expose</button><input type="file" id="fileinp-'+id+'" class="file-input" onchange="sendFileSelected(\''+id+'\',this)"><button class="readonly-hidden" onclick="sendFile(\''+id+'\')">📁 Send</button><button class="readonly-hidden" onclick="requestFile(\''+id+'\')">📥 Get</button></div>'
  g.appendChild(t)
 }
 </script></body></html>`
