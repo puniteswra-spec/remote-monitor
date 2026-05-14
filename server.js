@@ -227,7 +227,7 @@ app.post('/api/tunnel/:agentId', auth, (req, res) => {
   res.json({success: true, agent: agentId, message: 'Tunnel starting...'});
 });
 
-app.use(express.static(__dirname));
+// No static serve needed — dashboard served via app.get('/')
 
 // Report endpoint
 app.get('/api/report', auth, (req, res) => {
