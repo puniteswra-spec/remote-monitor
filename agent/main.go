@@ -26,7 +26,7 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-const Version = "6.0.8"
+const Version = "6.0.9b"
 
 var agentId string
 var isServerMode = false
