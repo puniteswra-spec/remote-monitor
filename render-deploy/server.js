@@ -53,7 +53,7 @@ function wsAuth(req) {
 // Serve dashboard with auth token injected into WebSocket URL
 app.get('/', auth, (req, res) => {
   try {
-    const html = require('fs').readFileSync(__dirname + '/index.html', 'utf8');
+    const html = require('fs').readFileSync(__dirname + '/../server/dashboard/index.html', 'utf8');
     res.send(html.replace(/TOKEN_PLACEHOLDER/g, AUTH_TOKEN));
   } catch (e) {
     res.status(500).send('Dashboard load error: ' + e.message);
