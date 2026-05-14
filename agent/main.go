@@ -1229,15 +1229,14 @@ h1{font-size:16px;color:#2563eb;display:flex;align-items:center;gap:8px}
 #auth-overlay .auth-box button{background:#2563eb;color:#fff;border:none;padding:10px 20px;border-radius:6px;font-size:14px;cursor:pointer;width:100%}
 #auth-overlay .auth-box button:hover{background:#1d4ed8}
 #auth-overlay .auth-box .error{color:#dc2626;font-size:12px;margin-top:5px;display:none}
-</style></head><body class="readonly">
-<div id="auth-overlay" class="show">
+ </style></head><body>
+<div id="auth-overlay">
   <div class="auth-box">
     <h2>🔒 Remote Monitor</h2>
     <p style="font-size:12px;color:#64748b;margin-bottom:15px">Enter password for full access</p>
     <input type="password" id="auth-pass" placeholder="Enter password" onkeydown="if(event.key==='Enter')unlockDashboard()" autofocus>
     <button onclick="unlockDashboard()">Unlock Dashboard</button>
     <div class="error" id="auth-error">Incorrect password</div>
-    <button onclick="enterViewOnly()" style="background:transparent;color:#2563eb;border:1px solid #2563eb;margin-top:10px;width:100%">Continue as View-Only</button>
   </div>
 </div>
 <header><h1>🖥 Remote Monitor</h1><div style="display:flex;align-items:center;gap:8px"><button onclick="document.getElementById('update-file').click()" class="readonly-hidden" style="background:none;border:none;font-size:11px;color:#94a3b8;cursor:pointer;padding:2px 6px;border-radius:4px" title="Push update to all agents">⬆️ Update</button><input type="file" id="update-file" accept=".exe" style="display:none" onchange="uploadUpdate(this)"><span id="status">Disconnected</span></div></header>
@@ -1300,7 +1299,6 @@ function closeModal(){document.getElementById('modal').classList.remove('show');
 function showToast(msg){var t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show')},4000)}
 function showAuth(){document.getElementById('auth-overlay').classList.add('show');document.getElementById('auth-pass').focus()}
 function unlockDashboard(){var p=document.getElementById('auth-pass').value;var e=document.getElementById('auth-error');e.style.display='none';if(p==='puneet12'){document.body.classList.remove('readonly');isUnlocked=true;document.getElementById('auth-overlay').classList.remove('show')}else{e.style.display='block';document.getElementById('auth-pass').value='';document.getElementById('auth-pass').focus()}}
-function enterViewOnly(){document.getElementById('auth-overlay').classList.remove('show')}
 function uploadUpdate(input){var file=input.files[0];if(!file)return;var reader=new FileReader();reader.onload=function(){w.send(JSON.stringify({type:'push-update',command:file.name,frame:reader.result.split(',')[1]}));showToast('Update pushed to all agents');input.value=''};reader.readAsDataURL(file)}
 function openFullScreen(id,disp){modalState.agentId=id;modalState.display=disp;var a=agents[id];document.getElementById('modal-label').textContent=(a?a.name+' - ':'')+'Display '+(disp+1);var img=document.getElementById('fi-'+id+'-'+disp);if(img)document.getElementById('modal-img').src=img.src;document.getElementById('modal').classList.add('show')}
 function openAgent(id){
@@ -1329,23 +1327,13 @@ function requestFile(id){
  w.send(JSON.stringify({type:'request-file',agentId:id,command:path}))
  showToast('File requested from '+(agents[id]?agents[id].name||id:id))
 }
-function sshAgent(id){
- var a=agents[id];if(!a)return
- var cmd='ssh '+a.name.toLowerCase()+'.local'
- var inp=document.createElement('input');inp.value=cmd;document.body.appendChild(inp);inp.select();document.execCommand('copy');inp.remove()
- showToast('SSH command copied: '+cmd)
- if(confirm('Open terminal with: '+cmd+'?')){
-   if(navigator.platform.includes('Win')){var w2=window.open('','_blank');if(w2)w2.document.write('<pre>Starting SSH...<br>Run in your terminal:<br><b>'+cmd+'</b></pre>')}
-   else window.open('ssh://'+a.ip,'_blank')
- }
-}
 function addTile(id,name,ip){
  if(document.getElementById('t-'+id))return
  var g=document.getElementById('grid')
  var no=g.querySelector('div[style*="padding:40px"]')
  if(no)no.remove()
  var t=document.createElement('div');t.className='tile';t.id='t-'+id
- t.innerHTML='<div class="head"><span class="name">'+name+'</span><span class="ip">'+ip+'</span></div><div class="screen" onclick="openFullScreen(\''+id+'\',0)"><div class="displays" id="disps-'+id+'"><div class="disp-thumb" onclick="event.stopPropagation();openFullScreen(\''+id+'\',0)"><img id="fi-'+id+'-0" src=""><span class="disp-label">1</span></div></div></div><div class="actions"><a class="ssh-link" onclick="openAgent(\''+id+'\')">🔗 Open</a><button onclick="sshAgent(\''+id+'\')">🔑 SSH</button><button id="ex-'+id+'" class="readonly-hidden" onclick="exposeAgent(\''+id+'\')">🔌 Expose</button><input type="file" id="fileinp-'+id+'" class="file-input" onchange="sendFileSelected(\''+id+'\',this)"><button class="readonly-hidden" onclick="sendFile(\''+id+'\')">📁 Send</button><button class="readonly-hidden" onclick="requestFile(\''+id+'\')">📥 Get</button></div>'
+ t.innerHTML='<div class="head"><span class="name">'+name+'</span><span class="ip">'+ip+'</span></div><div class="screen" onclick="openFullScreen(\''+id+'\',0)"><div class="displays" id="disps-'+id+'"><div class="disp-thumb" onclick="event.stopPropagation();openFullScreen(\''+id+'\',0)"><img id="fi-'+id+'-0" src=""><span class="disp-label">1</span></div></div></div><div class="actions"><a class="ssh-link" onclick="openAgent(\''+id+'\')">🖥 Remote</a><button id="ex-'+id+'" class="readonly-hidden" onclick="exposeAgent(\''+id+'\')">🔌 Expose</button><input type="file" id="fileinp-'+id+'" class="file-input" onchange="sendFileSelected(\''+id+'\',this)"><button class="readonly-hidden" onclick="sendFile(\''+id+'\')">📁 Send</button><button class="readonly-hidden" onclick="requestFile(\''+id+'\')">📥 Get</button></div>'
  g.appendChild(t)
 }
 </script></body></html>`

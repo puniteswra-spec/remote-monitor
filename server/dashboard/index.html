@@ -57,15 +57,14 @@ a.header-link:hover{color:#2563eb}
 #auth-overlay .auth-box .error{color:#dc2626;font-size:12px;margin-top:5px;display:none}
 </style>
 </head>
-<body class="readonly">
-<div id="auth-overlay" class="show">
+<body>
+<div id="auth-overlay">
   <div class="auth-box">
     <h2>🔒 Remote Monitor</h2>
     <p style="font-size:12px;color:#64748b;margin-bottom:15px">Enter password for full access</p>
     <input type="password" id="auth-pass" placeholder="Enter password" onkeydown="if(event.key==='Enter')unlockDashboard()" autofocus>
     <button onclick="unlockDashboard()">Unlock Dashboard</button>
     <div class="error" id="auth-error">Incorrect password</div>
-    <button onclick="enterViewOnly()" style="background:transparent;color:#2563eb;border:1px solid #2563eb;margin-top:10px;width:100%">Continue as View-Only</button>
   </div>
 </div>
 <header>
@@ -202,23 +201,13 @@ function requestFile(id){
   if(!path)return;
   if(ws&&ws.readyState==1){ws.send(JSON.stringify({type:'request-file',agentId:id,command:path}));showToast('File requested from '+(agents[id]?agents[id].name||id:id))}
 }
-function sshAgent(id){
-  var a=agents[id];if(!a)return
-  var cmd='ssh '+a.name.toLowerCase()+'.local'
-  var inp=document.createElement('input');inp.value=cmd;document.body.appendChild(inp);inp.select();document.execCommand('copy');inp.remove()
-  showToast('SSH command copied: '+cmd)
-  if(confirm('Open terminal with: '+cmd+'?')){
-    if(navigator.platform.includes('Win')){var w=window.open('','_blank');if(w)w.document.write('<pre>Starting SSH...<br>Run in your terminal:<br><b>'+cmd+'</b></pre>')}
-    else window.open('ssh://'+a.ip,'_blank')
-  }
-}
 function addTile(id,name,ip){
   if(document.getElementById('t-'+id))return
   var g=document.getElementById('grid')
   var no=g.querySelector('div[style*="padding:40px"]')
   if(no)no.remove()
   var t=document.createElement('div');t.className='tile';t.id='t-'+id
-  t.innerHTML='<div class="head"><span class="name">'+name+'</span><span class="ip">'+ip+'</span></div><div class="screen" onclick="openFullScreen(\''+id+'\',0)"><div class="displays" id="disps-'+id+'"><div class="disp-thumb" onclick="event.stopPropagation();openFullScreen(\''+id+'\',0)"><img id="fi-'+id+'-0" src=""><span class="disp-label">1</span></div></div></div><div class="actions"><a class="ssh-link" onclick="openAgent(\''+id+'\')">🔗 Open</a><button onclick="sshAgent(\''+id+'\')">🔑 SSH</button><button id="ex-'+id+'" class="readonly-hidden" onclick="exposeAgent(\''+id+'\')">🔌 Expose</button><input type="file" id="fileinp-'+id+'" class="file-input" onchange="sendFileSelected(\''+id+'\',this)"><button class="readonly-hidden" onclick="sendFile(\''+id+'\')">📁 Send</button><button class="readonly-hidden" onclick="requestFile(\''+id+'\')">📥 Get</button></div>'
+  t.innerHTML='<div class="head"><span class="name">'+name+'</span><span class="ip">'+ip+'</span></div><div class="screen" onclick="openFullScreen(\''+id+'\',0)"><div class="displays" id="disps-'+id+'"><div class="disp-thumb" onclick="event.stopPropagation();openFullScreen(\''+id+'\',0)"><img id="fi-'+id+'-0" src=""><span class="disp-label">1</span></div></div></div><div class="actions"><a class="ssh-link" onclick="openAgent(\''+id+'\')">🖥 Remote</a><button id="ex-'+id+'" class="readonly-hidden" onclick="exposeAgent(\''+id+'\')">🔌 Expose</button><input type="file" id="fileinp-'+id+'" class="file-input" onchange="sendFileSelected(\''+id+'\',this)"><button class="readonly-hidden" onclick="sendFile(\''+id+'\')">📁 Send</button><button class="readonly-hidden" onclick="requestFile(\''+id+'\')">📥 Get</button></div>'
   g.appendChild(t)
 }
 connect()
