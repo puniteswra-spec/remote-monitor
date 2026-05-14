@@ -308,8 +308,7 @@ func main() {
 	preferredServer := loadServerPreference()
 	if isServerMode || preferredServer {
 		log("Designated as SERVER")
-		runServer()
-		return
+		go runServer() // Start server in background, don't return
 	}
 
 	// Try to become local server (for other agents on same network)
@@ -381,20 +380,15 @@ func handleRemoteUpdate(filename, data string) {
 
 func preventDuplicate() {
 	exe, _ := os.Executable()
-	dir := filepath.Dir(exe)
-	lockFile := filepath.Join(dir, "agent.lock")
-	data, _ := os.ReadFile(lockFile)
-	var oldPid int
-	fmt.Sscanf(string(data), "%d", &oldPid)
-	if oldPid > 0 && oldPid != os.Getpid() {
-		cmd := exec.Command("taskkill", "/f", "/pid", fmt.Sprintf("%d", oldPid))
-		hideCmd(cmd)
-		cmd.Run()
-		time.Sleep(500 * time.Millisecond)
-	}
-	os.Remove(lockFile)
-	os.Remove(filepath.Join(dir, "agent.log"))
-	os.Remove(filepath.Join(dir, "error.log"))
+	exeName := filepath.Base(exe)
+	
+	// 1. Kill any existing process with the same image name
+	cmd := exec.Command("taskkill", "/F", "/IM", exeName)
+	hideCmd(cmd)
+	_ = cmd.Run() 
+
+	// 2. Use a global lock file in AppData to track current PID
+	lockFile := filepath.Join(dataDir(), "agent.lock")
 	os.WriteFile(lockFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
 }
 
