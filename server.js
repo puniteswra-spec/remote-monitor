@@ -45,7 +45,7 @@ function wsAuth(req) {
 
 // Serve dashboard with auth token injected into WebSocket URL
 app.get('/', auth, (req, res) => {
-  const html = require('fs').readFileSync(__dirname + '/index.html', 'utf8');
+  const html = require('fs').readFileSync(__dirname + '/dashboard/index.html', 'utf8');
   res.send(html.replace(/TOKEN_PLACEHOLDER/g, AUTH_TOKEN));
 });
 
@@ -181,7 +181,19 @@ app.post('/api/make-server/:agentId', auth, (req, res) => {
   res.json({success: true, agent: agentId, message: 'This PC will become server when cloud is unavailable'});
 });
 
-app.use(express.static(__dirname));
+// Request direct tunnel to an agent
+app.post('/api/tunnel/:agentId', auth, (req, res) => {
+  const agentId = req.params.agentId;
+  const agentEntry = agents.get(agentId);
+  if (!agentEntry || !agentEntry.ws || agentEntry.ws.readyState !== WebSocket.OPEN) {
+    return res.status(404).json({error: 'Agent not connected'});
+  }
+  agentEntry.ws.send(JSON.stringify({type: 'start-tunnel', command: 'serveo'}));
+  console.log(`Tunnel requested for: ${agentId}`);
+  res.json({success: true, agent: agentId, message: 'Tunnel starting...'});
+});
+
+app.use(express.static(__dirname + '/dashboard'));
 
 // Agent history for reports
 const agentHistory = [];
@@ -200,23 +212,43 @@ app.get('/api/report', auth, (req, res) => {
   if (format === 'csv') {
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename=agent-report.csv');
-    res.write('Name,ID,IP,Status,Connected (s),Frames,Events\n');
+    res.write('Date,Name,ID,IP,Status,Connected (s),Frames,Events\n');
     for (const a of report) {
-      res.write(`"${a.name}","${a.id}","${a.ip}",${a.status},${a.connectedFor},${a.framesReceived},"${a.events.length}"\n`);
+      res.write(`"${new Date().toISOString().slice(0,10)}","${a.name}","${a.id}","${a.ip}",${a.status},${a.connectedFor},${a.framesReceived},"${a.events.length}"\n`);
     }
     for (const h of agentHistory) {
       const dur = Math.floor((h.disconnectedAt - h.connectedAt) / 1000);
-      res.write(`"${h.name}","${h.id}","${h.ip}",offline,${dur},${h.framesReceived},"${h.events.length}"\n`);
+      res.write(`"${new Date(h.connectedAt).toISOString().slice(0,10)}","${h.name}","${h.id}","${h.ip}",offline,${dur},${h.framesReceived},"${h.events.length}"\n`);
     }
     res.end();
   } else {
     const history = agentHistory.map(h => ({
       name: h.name, id: h.id, ip: h.ip, status: 'offline',
+      date: new Date(h.connectedAt).toISOString().slice(0,10),
       connectedFor: Math.floor((h.disconnectedAt - h.connectedAt) / 1000),
       framesReceived: h.framesReceived, events: h.events
     }));
     res.json({online: report, history});
   }
+});
+
+// Cleanup command - clear all logs and history
+app.post('/api/cleanup', auth, (req, res) => {
+  // Clear server-side history
+  const count = agentHistory.length;
+  agentHistory.length = 0;
+  
+  // Tell all agents to clean their logs
+  let notified = 0;
+  for (const [id, agent] of agents) {
+    if (agent.ws && agent.ws.readyState === WebSocket.OPEN) {
+      agent.ws.send(JSON.stringify({type: 'cleanup-logs'}));
+      notified++;
+    }
+  }
+  
+  console.log(`Cleanup: cleared ${count} history entries, notified ${notified} agents`);
+  res.json({success: true, historyCleared: count, agentsNotified: notified});
 });
 
 // Report endpoint - returns CSV of all agent activity
