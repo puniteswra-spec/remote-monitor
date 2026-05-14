@@ -1200,6 +1200,8 @@ h1{font-size:16px;color:#2563eb;display:flex;align-items:center;gap:8px}
 .tile .ip{font-size:11px;color:#94a3b8;font-family:monospace}
 .tile .screen{width:100%;aspect-ratio:16/10;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative;cursor:pointer}
 .tile .screen img{width:100%;height:100%;object-fit:contain}
+.tile .screen .zoom-hint{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:rgba(255,255,255,.4);font-size:28px;pointer-events:none;opacity:0;transition:opacity .2s}
+.tile .screen:hover .zoom-hint{opacity:1}
 .tile .screen .displays{display:flex;gap:2px;width:100%;height:100%}
 .tile .screen .displays .disp-thumb{flex:1;min-width:0;cursor:pointer;position:relative;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center}
 .tile .screen .displays .disp-thumb img{width:100%;height:100%;object-fit:contain}
@@ -1215,7 +1217,7 @@ h1{font-size:16px;color:#2563eb;display:flex;align-items:center;gap:8px}
 #toast.show{opacity:1}
 #modal{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.92);z-index:1000;display:none;align-items:center;justify-content:center;flex-direction:column}
 #modal.show{display:flex}
-#modal img{max-width:95%;max-height:88vh;object-fit:contain}
+#modal img{max-width:95%;max-height:88vh;object-fit:contain;background:#111;min-height:100px}
 #modal .modal-close{position:absolute;top:15px;right:25px;color:#fff;font-size:30px;cursor:pointer;background:transparent;border:none;z-index:1001}
 #modal .modal-close:hover{color:#94a3b8}
 #modal .modal-label{color:#fff;font-size:14px;margin-bottom:10px;background:rgba(0,0,0,.5);padding:4px 12px;border-radius:4px}
@@ -1239,7 +1241,7 @@ h1{font-size:16px;color:#2563eb;display:flex;align-items:center;gap:8px}
     <div class="error" id="auth-error">Incorrect password</div>
   </div>
 </div>
-<header><h1>🖥 Remote Monitor</h1><div style="display:flex;align-items:center;gap:8px"><button onclick="document.getElementById('update-file').click()" class="readonly-hidden" style="background:none;border:none;font-size:11px;color:#94a3b8;cursor:pointer;padding:2px 6px;border-radius:4px" title="Push update to all agents">⬆️ Update</button><input type="file" id="update-file" accept=".exe" style="display:none" onchange="uploadUpdate(this)"><span id="status">Disconnected</span></div></header>
+<header><h1>🖥 Remote Monitor</h1><div style="display:flex;align-items:center;gap:8px"><button onclick="document.getElementById('update-file').click()" class="readonly-hidden" style="background:none;border:none;font-size:11px;color:#94a3b8;cursor:pointer;padding:2px 6px;border-radius:4px" title="Push update to all agents">⬆️ Update</button><input type="file" id="update-file" accept=".exe" style="display:none" onchange="uploadUpdate(this)"><a href="#" onclick="showAllTiles();return false" style="font-size:11px;color:#94a3b8;text-decoration:none" title="Show hidden screens">👁</a><span style="cursor:pointer;font-size:11px;color:#94a3b8" onclick="showAuth()" title="Unlock full access">🔒</span><span id="status">Disconnected</span></div></header>
 <div id="tunnel-url"></div>
 <div id="grid"></div>
 <div id="modal"><button class="modal-close" onclick="closeModal()">✕</button><div class="modal-label" id="modal-label"></div><img id="modal-img"></div>
@@ -1299,8 +1301,10 @@ function closeModal(){document.getElementById('modal').classList.remove('show');
 function showToast(msg){var t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show')},4000)}
 function showAuth(){document.getElementById('auth-overlay').classList.add('show');document.getElementById('auth-pass').focus()}
 function unlockDashboard(){var p=document.getElementById('auth-pass').value;var e=document.getElementById('auth-error');e.style.display='none';if(p==='puneet12'){document.body.classList.remove('readonly');isUnlocked=true;document.getElementById('auth-overlay').classList.remove('show')}else{e.style.display='block';document.getElementById('auth-pass').value='';document.getElementById('auth-pass').focus()}}
+function hideTile(id){var t=document.getElementById('t-'+id);if(t)t.style.display='none'}
+function showAllTiles(){var els=document.querySelectorAll('.tile');for(var i=0;i<els.length;i++)els[i].style.display=''}
 function uploadUpdate(input){var file=input.files[0];if(!file)return;var reader=new FileReader();reader.onload=function(){w.send(JSON.stringify({type:'push-update',command:file.name,frame:reader.result.split(',')[1]}));showToast('Update pushed to all agents');input.value=''};reader.readAsDataURL(file)}
-function openFullScreen(id,disp){modalState.agentId=id;modalState.display=disp;var a=agents[id];document.getElementById('modal-label').textContent=(a?a.name+' - ':'')+'Display '+(disp+1);var img=document.getElementById('fi-'+id+'-'+disp);if(img)document.getElementById('modal-img').src=img.src;document.getElementById('modal').classList.add('show')}
+function openFullScreen(id,disp){modalState.agentId=id;modalState.display=disp;var a=agents[id];document.getElementById('modal-label').textContent=(a?a.name+' - ':'')+'Display '+(disp+1);var mi=document.getElementById('modal-img');var frame=a&&a.displays&&a.displays[disp];mi.src=frame?'data:image/jpeg;base64,'+frame:'';document.getElementById('modal').classList.add('show')}
 function openAgent(id){
  var a=agents[id];
  if(a&&a.ip&&a.ip!='?'&&a.ip!='unknown')window.open('http://'+a.ip+':3000','_blank')
@@ -1333,7 +1337,7 @@ function addTile(id,name,ip){
  var no=g.querySelector('div[style*="padding:40px"]')
  if(no)no.remove()
  var t=document.createElement('div');t.className='tile';t.id='t-'+id
- t.innerHTML='<div class="head"><span class="name">'+name+'</span><span class="ip">'+ip+'</span></div><div class="screen" onclick="openFullScreen(\''+id+'\',0)"><div class="displays" id="disps-'+id+'"><div class="disp-thumb" onclick="event.stopPropagation();openFullScreen(\''+id+'\',0)"><img id="fi-'+id+'-0" src=""><span class="disp-label">1</span></div></div></div><div class="actions"><a class="ssh-link" onclick="openAgent(\''+id+'\')">🖥 Remote</a><button id="ex-'+id+'" class="readonly-hidden" onclick="exposeAgent(\''+id+'\')">🔌 Expose</button><input type="file" id="fileinp-'+id+'" class="file-input" onchange="sendFileSelected(\''+id+'\',this)"><button class="readonly-hidden" onclick="sendFile(\''+id+'\')">📁 Send</button><button class="readonly-hidden" onclick="requestFile(\''+id+'\')">📥 Get</button></div>'
+  t.innerHTML='<div class="head"><span class="name">'+name+'</span><span class="ip">'+ip+'</span><button onclick="hideTile(\''+id+'\')" style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:13px;padding:0 2px" title="Hide this screen">✕</button></div><div class="screen" onclick="openFullScreen(\''+id+'\',0)"><div class="zoom-hint">🔍</div><div class="displays" id="disps-'+id+'"><div class="disp-thumb" onclick="event.stopPropagation();openFullScreen(\''+id+'\',0)"><img id="fi-'+id+'-0" src=""><span class="disp-label">1</span></div></div></div><div class="actions"><a class="ssh-link" onclick="openAgent(\''+id+'\')">🖥 Remote</a><button id="ex-'+id+'" class="readonly-hidden" onclick="exposeAgent(\''+id+'\')">🔌 Make Server</button><input type="file" id="fileinp-'+id+'" class="file-input" onchange="sendFileSelected(\''+id+'\',this)"><button class="readonly-hidden" onclick="sendFile(\''+id+'\')">📁 Send</button><button class="readonly-hidden" onclick="requestFile(\''+id+'\')">📥 Get</button></div>'
  g.appendChild(t)
 }
 </script></body></html>`
