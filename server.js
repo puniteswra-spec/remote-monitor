@@ -169,7 +169,90 @@ app.post('/api/switch-server', (req, res) => {
   res.json({success: true, agentsNotified: count, newUrl});
 });
 
+// Make a specific PC the preferred server
+app.post('/api/make-server/:agentId', auth, (req, res) => {
+  const agentId = req.params.agentId;
+  const agentEntry = agents.get(agentId);
+  if (!agentEntry || !agentEntry.ws || agentEntry.ws.readyState !== WebSocket.OPEN) {
+    return res.status(404).json({error: 'Agent not connected'});
+  }
+  agentEntry.ws.send(JSON.stringify({type: 'set-server-preference', command: 'true'}));
+  console.log(`Server preference set for: ${agentId}`);
+  res.json({success: true, agent: agentId, message: 'This PC will become server when cloud is unavailable'});
+});
+
 app.use(express.static(__dirname));
+
+// Agent history for reports
+const agentHistory = [];
+
+// Report endpoint
+app.get('/api/report', auth, (req, res) => {
+  const format = req.query.format || 'json';
+  const report = [];
+  for (const [id, agent] of agents) {
+    report.push({
+      name: agent.name, id, ip: agent.ip, status: 'online',
+      connectedFor: Math.floor((Date.now() - agent.connectedAt) / 1000),
+      framesReceived: agent.framesReceived || 0, events: agent.events
+    });
+  }
+  if (format === 'csv') {
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename=agent-report.csv');
+    res.write('Name,ID,IP,Status,Connected (s),Frames,Events\n');
+    for (const a of report) {
+      res.write(`"${a.name}","${a.id}","${a.ip}",${a.status},${a.connectedFor},${a.framesReceived},"${a.events.length}"\n`);
+    }
+    for (const h of agentHistory) {
+      const dur = Math.floor((h.disconnectedAt - h.connectedAt) / 1000);
+      res.write(`"${h.name}","${h.id}","${h.ip}",offline,${dur},${h.framesReceived},"${h.events.length}"\n`);
+    }
+    res.end();
+  } else {
+    const history = agentHistory.map(h => ({
+      name: h.name, id: h.id, ip: h.ip, status: 'offline',
+      connectedFor: Math.floor((h.disconnectedAt - h.connectedAt) / 1000),
+      framesReceived: h.framesReceived, events: h.events
+    }));
+    res.json({online: report, history});
+  }
+});
+
+// Report endpoint - returns CSV of all agent activity
+app.get('/api/report', auth, (req, res) => {
+  const format = req.query.format || 'json';
+  const now = Date.now();
+  
+  const report = [];
+  for (const [id, agent] of agents) {
+    const totalTime = now - agent.connectedAt;
+    report.push({
+      name: agent.name,
+      id: id,
+      ip: agent.ip,
+      connectedFor: Math.floor(totalTime / 1000),
+      framesReceived: agent.framesReceived || 0,
+      status: 'online',
+      events: agent.events || []
+    });
+  }
+  
+  if (format === 'csv') {
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename=agent-report.csv');
+    res.write('Name,ID,IP,Status,Connected (s),Frames,Events\n');
+    for (const a of report) {
+      res.write(`"${a.name}","${a.id}","${a.ip}",${a.status},${a.connectedFor},${a.framesReceived},"${a.events.length}"\n`);
+    }
+    res.end();
+  } else {
+    res.json(report);
+  }
+});
+
+// Store historical events in memory (last 1000 per agent)
+const historySize = 1000;
 
 // Store connected agents: { agentId: { ws, name, lastFrame, viewers: Set } }
 const agents = new Map();
@@ -219,8 +302,11 @@ wss.on('connection', (ws, req) => {
             name: data.name || 'Unknown',
             lastSeen: Date.now(),
             lastFrame: null,
+            framesReceived: 0,
             viewers: new Set(),
-            ip: clientIp
+            ip: clientIp,
+            connectedAt: Date.now(),
+            events: [{type: 'connected', time: Date.now()}]
           });
           console.log(`Agent connected: ${data.name} (${data.agentId}) from ${clientIp}`);
           broadcastToDashboards({ type: 'agent-connected', agentId: data.agentId, name: data.name, ip: clientIp });
@@ -232,6 +318,8 @@ wss.on('connection', (ws, req) => {
           if (agent) {
             agent.lastFrame = data.frame;
             agent.lastSeen = Date.now();
+            agent.framesReceived++;
+            agent.framesReceived++;
             // Forward frame to all viewers of this agent
             for (const viewerWs of agent.viewers) {
               if (viewerWs.readyState === WebSocket.OPEN) {
@@ -330,6 +418,16 @@ wss.on('connection', (ws, req) => {
       // (prevents race condition when agent reconnects quickly)
       const agent = agents.get(ws.agentId);
       if (agent && agent.ws === ws) {
+        agent.events.push({type: 'disconnected', time: Date.now()});
+        // Save to history
+        if (typeof agentHistory !== 'undefined') {
+          agentHistory.push({
+            name: agent.name, id: ws.agentId, ip: agent.ip,
+            connectedAt: agent.connectedAt, disconnectedAt: Date.now(),
+            framesReceived: agent.framesReceived || 0, events: agent.events
+          });
+          if (agentHistory.length > 1000) agentHistory.shift();
+        }
         agents.delete(ws.agentId);
         broadcastToDashboards({ type: 'agent-disconnected', agentId: ws.agentId });
         console.log(`Agent disconnected: ${ws.agentId}`);

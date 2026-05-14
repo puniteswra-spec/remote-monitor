@@ -49,7 +49,7 @@ body.readonly .readonly-hidden { display: none; }
 </head>
 <body>
 <header>
-    <h1>🖥 Remote Monitor <span id="server-name" style="font-size:12px;color:#888;font-weight:normal"></span> <a href="/remote-session" target="_blank" style="font-size:11px;color:#555;text-decoration:none;margin-left:10px" title="Send this link to someone so they can share THEIR screen with you">🔗 Session</a></h1>
+    <h1>🖥 Remote Monitor <span id="server-name" style="font-size:12px;color:#888;font-weight:normal"></span> <span id="local-link" style="display:none;font-size:11px"><a href="#" onclick="openLocal();return false" style="color:#4caf50;text-decoration:none">🚀 Local</a></span> <button onclick="toggleGrid()" id="btn-grid" style="background:none;border:1px solid #3a3a5e;color:#888;border-radius:4px;padding:2px 8px;font-size:11px;cursor:pointer;margin-left:8px">⊞ Grid</button> <a href="/api/report" target="_blank" style="font-size:11px;color:#555;text-decoration:none;margin-left:10px" title="View agent activity report">📊 Report</a> <a href="/api/report?format=csv" target="_blank" style="font-size:11px;color:#555;text-decoration:none;margin-left:5px" title="Download CSV report">⬇</a> <a href="/remote-session" target="_blank" style="font-size:11px;color:#555;text-decoration:none;margin-left:10px" title="Send this link to someone so they can share THEIR screen with you">🔗 Session</a></h1>
     <div id="status">Disconnected</div>
 </header>
 <div class="container">
@@ -62,6 +62,7 @@ body.readonly .readonly-hidden { display: none; }
         </div>
     </div>
     <div id="viewer">
+        <div id="grid-container" style="display:none;flex-wrap:wrap;padding:10px;gap:10px;overflow-y:auto;height:100%"></div>
         <div id="viewer-placeholder">
             <span>🖥</span>
             Select a device from the left to view
@@ -101,6 +102,7 @@ function tryAuth(user, pass) {
         document.getElementById('auth-status').textContent = '🔓';
         // Show hide buttons on existing cards
         document.querySelectorAll('.hide-agent').forEach(el => el.style.display = 'inline');
+        document.querySelectorAll('.make-server').forEach(el => el.style.display = 'inline');
         return true;
     }
     return false;
@@ -115,13 +117,38 @@ if (!isLocal) document.body.classList.add('readonly');
 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 const wsUrl = `${wsProtocol}//${window.location.host}?token=TOKEN_PLACEHOLDER`;
 
+// Fallback servers to try if current server goes down
+const fallbackServers = [
+    'wss://remote-monitor-1l0s.onrender.com',
+    'wss://deviation-tweak-charter.ngrok-free.dev',
+    'ws://43.247.40.101:3000'
+];
+
 // Show which server we're connected to
-document.getElementById('server-name').textContent = window.location.hostname === 'localhost' ? '🔵 Local' : 
-    window.location.hostname.includes('onrender.com') ? '🟢 Render' :
-    window.location.hostname.includes('ngrok') ? '🟡 ngrok' :
-    window.location.hostname.includes('trycloudflare') ? '🟠 Cloudflare' :
-    '⚪ ' + window.location.hostname;
+function updateServerBadge(hostname) {
+    document.getElementById('server-name').textContent = 
+        hostname === 'localhost' ? '🔵 Local' : 
+        hostname.includes('onrender.com') ? '🟢 Render' :
+        hostname.includes('ngrok') ? '🟡 ngrok' :
+        hostname.includes('trycloudflare') ? '🟠 Cloudflare' :
+        '⚪ ' + hostname;
+    // Show local link if not on localhost
+    if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
+        document.getElementById('local-link').style.display = 'inline';
+    }
+}
+updateServerBadge(window.location.hostname);
+
+function openLocal() {
+    // Try to find local server
+    const base = window.location.origin.replace(/https?:\/\//, '');
+    window.open('http://localhost:3000', '_blank');
+}
 let ws = null;
+let gridMode = false;
+let allFrames = {};
+let allAgents = [];
+let viewingAll = false;
 let selectedAgentId = null;
 let isViewing = false;
 let isControlling = false;
@@ -139,10 +166,19 @@ const btnStop = document.getElementById('btn-stop');
 const controlIndicator = document.getElementById('control-indicator');
 
 function connect() {
-    ws = new WebSocket(wsUrl);
+    connectToServer(wsUrl, 0);
+}
+
+function connectToServer(url, fallbackIndex) {
+    ws = new WebSocket(url);
+    let currentFallback = fallbackIndex;
+    
     ws.onopen = () => {
         statusEl.textContent = 'Connected';
         statusEl.style.color = '#4caf50';
+        // Update badge to show connected server
+        const serverHost = new URL(url).hostname;
+        updateServerBadge(serverHost);
         ws.send(JSON.stringify({ type: 'dashboard-hello' }));
     };
     ws.onmessage = (e) => {
@@ -159,23 +195,39 @@ function connect() {
                 if (selectedAgentId === data.agentId) stopViewing();
                 break;
             case 'frame':
-                if (data.agentId === selectedAgentId) {
+                    // Store frame for all agents (for grid view)
+                    allFrames[data.agentId] = data.frame;
+                    
+                    if (data.agentId === selectedAgentId) {
                     screenImg.src = `data:image/jpeg;base64,${data.frame}`;
-                }
-                // Update thumbnail
-                const thumb = document.querySelector(`[data-agent-id="${data.agentId}"] .preview-thumb img`);
-                if (thumb) thumb.src = `data:image/jpeg;base64,${data.frame}`;
+                    }
+                    // Update thumbnail
+                    const thumb = document.querySelector(`[data-agent-id="${data.agentId}"] .preview-thumb img`);
+                    if (thumb) thumb.src = `data:image/jpeg;base64,${data.frame}`;
+                    
+                    // Update grid view if active
+                    if (gridMode) updateGridFrame(data.agentId, data.frame);
                 break;
         }
     };
     ws.onclose = () => {
         statusEl.textContent = 'Disconnected (reconnecting...)';
         statusEl.style.color = '#f44336';
-        setTimeout(connect, 2000);
+        
+        // Try next fallback server
+        if (currentFallback < fallbackServers.length) {
+            const nextUrl = fallbackServers[currentFallback] + '?token=TOKEN_PLACEHOLDER';
+            currentFallback++;
+            setTimeout(() => connectToServer(nextUrl, currentFallback), 2000);
+        } else {
+            // All fallbacks failed, retry original after delay
+            setTimeout(() => connectToServer(wsUrl, 0), 5000);
+        }
     };
 }
 
 function renderAgentList(agents) {
+    allAgents = agents;
     agentsContainer.innerHTML = '';
     // Load hidden agents from localStorage
     const hidden = JSON.parse(localStorage.getItem('hiddenAgents') || '[]');
@@ -208,11 +260,12 @@ function addAgentCard(id, name, ip) {
         <div class="agent-meta">
             <span><span class="agent-status"></span>Online</span>
             <span class="hide-agent" style="cursor:pointer;font-size:11px;color:#555;display:none" onclick="hideAgent('${id}')">✕ hide</span>
+            <span class="make-server" style="cursor:pointer;font-size:11px;color:#7c7cf0;display:none;margin-left:5px" onclick="makeServer('${id}')">★ server</span>
         </div>
     `;
     // Show hide button for authenticated users
     if (isAuthenticated) card.querySelector('.hide-agent').style.display = 'inline';
-    card.onclick = () => selectAgent(id);
+    card.onclick = () => { if (gridMode) focusAgent(id); else selectAgent(id); };
     agentsContainer.prepend(card);
     const noAgents = document.getElementById('no-agents');
     if (noAgents) noAgents.remove();
@@ -228,6 +281,15 @@ function hideAgent(id) {
     if (document.querySelectorAll('.agent-card').length === 0) {
         agentsContainer.innerHTML = '<div id="no-agents" style="padding:20px;text-align:center;color:#555;font-size:13px">All agents hidden. <a href="#" onclick="showHidden();return false" style="color:#7c7cf0">Show all</a></div>';
     }
+}
+
+function makeServer(id) {
+    fetch('/api/make-server/' + id, {
+        method: 'POST',
+        headers: {'Authorization': 'Basic ' + btoa('puneet:puneet12')}
+    }).then(r => r.json()).then(d => {
+        alert('✅ ' + d.agent + ' will become server when cloud is unavailable');
+    });
 }
 
 function showHidden() {
@@ -364,6 +426,71 @@ function onMouseClick(e) {
 function onKeyDown(e) {
     if (!isControlling || !selectedAgentId) return;
     ws.send(JSON.stringify({ type: 'control', agentId: selectedAgentId, command: 'keypress', params: { key: e.key, code: e.code } }));
+}
+
+// Grid View Functions
+function toggleGrid() {
+    gridMode = !gridMode;
+    document.getElementById('btn-grid').textContent = gridMode ? '⊞ Exit Grid' : '⊞ Grid';
+    document.getElementById('grid-container').style.display = gridMode ? 'flex' : 'none';
+    document.getElementById('viewer-placeholder').style.display = gridMode ? 'none' : '';
+    document.getElementById('viewer-active').style.display = gridMode ? 'none' : '';
+    
+    if (gridMode) {
+        refreshGridView();
+        if (!viewingAll) {
+            viewingAll = true;
+            // View all agents
+            allAgents.forEach(a => {
+                ws.send(JSON.stringify({type: 'view-agent', agentId: a.id}));
+            });
+        }
+    } else {
+        if (viewingAll) {
+            viewingAll = false;
+            allAgents.forEach(a => {
+                ws.send(JSON.stringify({type: 'stop-viewing', agentId: a.id}));
+            });
+        }
+    }
+}
+
+function refreshGridView() {
+    const grid = document.getElementById('grid-container');
+    grid.innerHTML = '';
+    allAgents.forEach(a => {
+        const card = document.createElement('div');
+        card.style.cssText = 'width:calc(33%-10px);min-width:250px;flex:1 1 300px;background:#1a1a3e;border-radius:8px;overflow:hidden;cursor:pointer;border:2px solid #2a2a5e';
+        card.innerHTML = `
+            <div style="padding:6px 10px;font-size:12px;color:#888;display:flex;justify-content:space-between">
+                <span>${a.name}</span>
+                <span style="color:#555">${a.ip || '?'}</span>
+            </div>
+            <div style="position:relative">
+                <img src="${allFrames[a.id] ? 'data:image/jpeg;base64,'+allFrames[a.id] : ''}" 
+                     style="width:100%;display:block;aspect-ratio:16/9;object-fit:contain;background:#0a0a20"
+                     id="grid-img-${a.id}">
+            </div>`;
+        card.onclick = () => focusAgent(a.id);
+        grid.appendChild(card);
+    });
+}
+
+function updateGridFrame(agentId, frame) {
+    const img = document.getElementById('grid-img-' + agentId);
+    if (img) img.src = 'data:image/jpeg;base64,' + frame;
+}
+
+function focusAgent(id) {
+    toggleGrid(); // Exit grid mode
+    selectAgent(id); // Select the agent
+    // Start viewing
+    if (!isViewing) {
+        isViewing = true;
+        btnView.textContent = 'Viewing...';
+        btnView.classList.add('active');
+        ws.send(JSON.stringify({ type: 'view-agent', agentId: id }));
+    }
 }
 
 connect();
