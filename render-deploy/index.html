@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Remote Monitoring Dashboard</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: linear-gradient(135deg, #0a0e27 0%, #1a1040 50%, #0f1a3a 100%); color: #e0e0ff; min-height: 100vh; }
+header { background: rgba(20, 25, 60, 0.95); backdrop-filter: blur(10px); padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(100, 120, 255, 0.15); }
+h1 { font-size: 20px; color: #7c7cf0; }
+h1 span { color: #8888cc; }
+#status { font-size: 12px; color: #8888bb; }
+
+.container { display: flex; height: calc(100vh - 60px); }
+
+/* Agent List */
+#agent-list { width: 300px; min-width: 300px; background: rgba(15, 18, 45, 0.9); padding: 15px; overflow-y: auto; border-right: 1px solid rgba(100, 120, 255, 0.1); position:relative; }
+#agent-list h2 { font-size: 14px; color: #8888bb; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 1px; }
+.agent-card { background: rgba(25, 30, 70, 0.8); border: 1px solid rgba(100, 120, 255, 0.15); border-radius: 8px; padding: 12px; margin-bottom: 8px; cursor: pointer; transition: all 0.2s; }
+.agent-card:hover { border-color: #7c7cf0; background: rgba(35, 40, 85, 0.9); }
+.agent-card.selected { border-color: #7c7cf0; background: rgba(35, 40, 85, 0.9); box-shadow: 0 0 15px rgba(124, 124, 240, 0.2); }
+.agent-name { font-weight: 600; font-size: 14px; }
+.agent-id { font-size: 11px; color: #666; margin-top: 2px; font-family: monospace; }
+.agent-ip { font-size: 11px; color: #555; margin-top: 1px; font-family: monospace; }
+.agent-meta { display: flex; justify-content: space-between; margin-top: 8px; font-size: 11px; color: #888; }
+.agent-status { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #4caf50; margin-right: 5px; }
+.preview-thumb { width: 100%; height: 80px; background: #0a0a20; border-radius: 4px; margin-top: 8px; overflow: hidden; }
+.preview-thumb img { width: 100%; height: 100%; object-fit: cover; }
+
+/* Viewer */
+#viewer { flex: 1; display: flex; flex-direction: column; background: rgba(8, 10, 30, 0.9); }
+#viewer-placeholder { display: flex; align-items: center; justify-content: center; height: 100%; color: #5555aa; font-size: 16px; flex-direction: column; gap: 10px; }
+#viewer-placeholder span { font-size: 40px; }
+#viewer-active { display: none; flex-direction: column; height: 100%; }
+#viewer-header { padding: 10px 15px; background: rgba(20, 25, 60, 0.95); display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(100, 120, 255, 0.1); }
+#viewer-name { font-weight: 600; font-size: 14px; }
+#viewer-controls { display: flex; gap: 8px; }
+#viewer-controls button { background: #2a2a5e; color: #e0e0ff; border: 1px solid rgba(100, 120, 255, 0.2); padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+#viewer-controls button:hover { background: #3a3a7e; }
+#viewer-controls button.active { background: #7c7cf0; border-color: #7c7cf0; }
+.readonly-hidden { display: inline-block; }
+body.readonly .readonly-hidden { display: none; }
+#viewer-screen { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; }
+#viewer-screen img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.control-indicator { position: absolute; top: 10px; right: 10px; background: rgba(124, 124, 240, 0.8); color: #fff; padding: 4px 10px; border-radius: 4px; font-size: 11px; display: none; }
+
+#no-agents { text-align: center; padding: 20px; color: #555; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+    <h1>🖥 Remote Monitor <span id="server-name" style="font-size:12px;color:#888;font-weight:normal"></span> <span id="local-link" style="display:none;font-size:11px"><a href="#" onclick="openLocal();return false" style="color:#4caf50;text-decoration:none">🚀 Local</a></span> <button onclick="toggleGrid()" id="btn-grid" style="background:none;border:1px solid #3a3a5e;color:#888;border-radius:4px;padding:2px 8px;font-size:11px;cursor:pointer;margin-left:8px">⊞ Grid</button> <a href="/api/report" target="_blank" style="font-size:11px;color:#555;text-decoration:none;margin-left:10px" title="View agent activity report">📊 Report</a> <a href="/api/report?format=csv" target="_blank" style="font-size:11px;color:#555;text-decoration:none;margin-left:5px" title="Download CSV report">⬇</a> <a href="#" onclick="cleanupLogs();return false" style="font-size:11px;color:#555;text-decoration:none;margin-left:5px" title="Clear all logs">🗑️</a> <a href="/remote-session" target="_blank" style="font-size:11px;color:#555;text-decoration:none;margin-left:10px" title="Send this link to someone so they can share THEIR screen with you">🔗 Session</a></h1>
+    <div id="status">Disconnected</div>
+</header>
+<div class="container">
+    <div id="agent-list">
+        <h2>Connected Devices <span id="org-select-container" style="display:none;font-size:11px;font-weight:normal;margin-left:5px">
+            <select id="org-select" style="background:#1a1a3e;color:#888;border:1px solid #3a3a5e;border-radius:3px;font-size:11px;padding:1px 4px">
+                <option value="">All</option>
+            </select>
+        </span> <span id="auth-status" style="font-size:11px;cursor:pointer" onclick="showAuth()">🔒</span> <span id="show-hidden" style="font-size:11px;cursor:pointer;color:#555;display:none" onclick="showHidden()">(hidden)</span></h2>
+        <div id="agents-container"></div>
+        <div id="auth-login" style="display:none;position:absolute;bottom:0;left:0;right:0;background:#1a1a3e;padding:10px;border-top:1px solid #2a2a5e">
+            <input type="password" id="auth-pass" placeholder="password" style="width:100%;padding:6px;background:#0f0f23;border:1px solid #3a3a5e;color:#fff;border-radius:4px;font-size:12px">
+            <button onclick="tryAuth('puneet',document.getElementById('auth-pass').value)" style="width:100%;margin-top:5px;padding:5px;background:#7c7cf0;border:none;color:#fff;border-radius:4px;cursor:pointer;font-size:12px">Unlock Control</button>
+        </div>
+    </div>
+    <div id="viewer">
+        <div id="grid-container" style="display:none;flex-wrap:wrap;padding:10px;gap:10px;overflow-y:auto;height:100%"></div>
+        <div id="viewer-placeholder">
+            <span>🖥</span>
+            Select a device from the left to view
+        </div>
+        <div id="viewer-active">
+            <div id="viewer-header">
+                <span id="viewer-name"></span>
+                <div id="viewer-controls">
+                    <button id="btn-view">View</button>
+                    <button id="btn-control" class="readonly-hidden">Control</button>
+                    <button id="btn-direct" style="display:none;font-size:11px;background:#2a5a2a">🔗 Direct</button>
+                    <button id="btn-send-file" style="display:none;font-size:11px">📁 Send File</button>
+                    <button id="btn-stop">Stop</button>
+                    <span style="float:right;font-size:10px;color:#5555aa;padding-top:8px">Created by Puneet Upreti</span>
+                </div>
+            </div>
+            <div id="viewer-screen">
+                <img id="screen-img" src="" alt="screen">
+                <div class="control-indicator" id="control-indicator">CONTROL ACTIVE</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+let isAuthenticated = false;
+let controlEnabled = false;
+
+// Hidden auth - check if already authenticated or localhost
+const AUTH_USER = 'puneet';
+const AUTH_PASS = 'puneet12';
+
+function tryAuth(user, pass) {
+    if (user === AUTH_USER && pass === AUTH_PASS) {
+        isAuthenticated = true;
+        document.body.classList.remove('readonly');
+        document.getElementById('auth-login').style.display = 'none';
+        document.getElementById('auth-status').textContent = '🔓';
+        // Show hide buttons on existing cards
+        document.querySelectorAll('.hide-agent').forEach(el => el.style.display = 'inline');
+        document.querySelectorAll('.make-server').forEach(el => el.style.display = 'inline');
+        return true;
+    }
+    return false;
+}
+
+function showAuth() {
+    document.getElementById('auth-login').style.display = 'flex';
+}
+
+if (!isLocal) document.body.classList.add('readonly');
+
+const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+const wsUrl = `${wsProtocol}//${window.location.host}?token=TOKEN_PLACEHOLDER`;
+
+// Fallback servers to try if current server goes down
+const fallbackServers = [
+    'wss://remote-monitor-1l0s.onrender.com',
+    'wss://deviation-tweak-charter.ngrok-free.dev',
+    'ws://43.247.40.101:3000'
+];
+
+// Show which server we're connected to
+function updateServerBadge(hostname) {
+    document.getElementById('server-name').textContent = 
+        hostname === 'localhost' ? '🔵 Local' : 
+        hostname.includes('onrender.com') ? '🟢 Render' :
+        hostname.includes('ngrok') ? '🟡 ngrok' :
+        hostname.includes('trycloudflare') ? '🟠 Cloudflare' :
+        '⚪ ' + hostname;
+    // Show local link if not on localhost
+    if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
+        document.getElementById('local-link').style.display = 'inline';
+    }
+}
+updateServerBadge(window.location.hostname);
+
+function openLocal() {
+    // Try to find local server
+    const base = window.location.origin.replace(/https?:\/\//, '');
+    window.open('http://localhost:3000', '_blank');
+}
+let ws = null;
+let gridMode = false;
+let allFrames = {};
+let allAgents = [];
+let viewingAll = false;
+let selectedAgentId = null;
+let isViewing = false;
+let isControlling = false;
+
+const agentsContainer = document.getElementById('agents-container');
+const statusEl = document.getElementById('status');
+const placeholder = document.getElementById('viewer-placeholder');
+const viewerActive = document.getElementById('viewer-active');
+const viewerName = document.getElementById('viewer-name');
+const screenImg = document.getElementById('screen-img');
+const btnView = document.getElementById('btn-view');
+const btnControl = document.getElementById('btn-control');
+const btnDirect = document.getElementById('btn-direct');
+const btnSendFile = document.getElementById('btn-send-file');
+const btnStop = document.getElementById('btn-stop');
+const controlIndicator = document.getElementById('control-indicator');
+
+function connect() {
+    connectToServer(wsUrl, 0);
+}
+
+function connectToServer(url, fallbackIndex) {
+    ws = new WebSocket(url);
+    let currentFallback = fallbackIndex;
+    
+    ws.onopen = () => {
+        statusEl.textContent = 'Connected';
+        statusEl.style.color = '#4caf50';
+        // Update badge to show connected server
+        const serverHost = new URL(url).hostname;
+        updateServerBadge(serverHost);
+        ws.send(JSON.stringify({ type: 'dashboard-hello' }));
+    };
+    ws.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+        switch (data.type) {
+            case 'agent-list':
+                renderAgentList(data.agents);
+                break;
+            case 'agent-connected':
+                addAgentCard(data.agentId, data.name, data.ip);
+                break;
+            case 'agent-disconnected':
+                removeAgentCard(data.agentId);
+                if (selectedAgentId === data.agentId) stopViewing();
+                break;
+            case 'frame':
+                    // Store frame for all agents (for grid view)
+                    allFrames[data.agentId] = data.frame;
+                    
+                    if (data.agentId === selectedAgentId) {
+                    screenImg.src = `data:image/jpeg;base64,${data.frame}`;
+                    }
+                    // Update thumbnail
+                    const thumb = document.querySelector(`[data-agent-id="${data.agentId}"] .preview-thumb img`);
+                    if (thumb) thumb.src = `data:image/jpeg;base64,${data.frame}`;
+                    
+                    // Update grid view if active
+                    if (gridMode) updateGridFrame(data.agentId, data.frame);
+                break;
+            case 'tunnel-status':
+                if (data.command === 'failed') {
+                    alert('Direct tunnel failed: ' + data.frame);
+                } else if (data.command.startsWith('http')) {
+                    // Received direct tunnel URL
+                    btnDirect.dataset.tunnelUrl = data.command;
+                    btnDirect.style.display = 'inline-block';
+                    btnDirect.textContent = '🔗 Direct';
+                }
+                break;
+        }
+    };
+    ws.onclose = () => {
+        statusEl.textContent = 'Disconnected (reconnecting...)';
+        statusEl.style.color = '#f44336';
+        
+        // Try next fallback server
+        if (currentFallback < fallbackServers.length) {
+            const nextUrl = fallbackServers[currentFallback] + '?token=TOKEN_PLACEHOLDER';
+            currentFallback++;
+            setTimeout(() => connectToServer(nextUrl, currentFallback), 2000);
+        } else {
+            // All fallbacks failed, retry original after delay
+            setTimeout(() => connectToServer(wsUrl, 0), 5000);
+        }
+    };
+}
+
+function renderAgentList(agents) {
+    allAgents = agents;
+    
+    // Build org dropdown
+    const orgs = new Set();
+    agents.forEach(a => { if (a.org) orgs.add(a.org); });
+    const sel = document.getElementById('org-select');
+    if (orgs.size > 0) {
+        document.getElementById('org-select-container').style.display = 'inline';
+        const currentOrg = sel.value;
+        sel.innerHTML = '<option value="">All</option>';
+        orgs.forEach(o => {
+            const opt = document.createElement('option');
+            opt.value = o;
+            opt.textContent = o;
+            if (currentOrg === o) opt.selected = true;
+            sel.appendChild(opt);
+        });
+    }
+    
+    // Filter by selected org
+    const selectedOrg = sel.value;
+    const filtered = selectedOrg ? agents.filter(a => a.org === selectedOrg) : agents;
+    
+    agentsContainer.innerHTML = '';
+    // Load hidden agents from localStorage
+    const hidden = JSON.parse(localStorage.getItem('hiddenAgents') || '[]');
+    const visible = filtered.filter(a => !hidden.includes(a.id));
+    
+    if (hidden.length > 0) document.getElementById('show-hidden').style.display = 'inline';
+    
+    if (visible.length === 0 && hidden.length > 0) {
+        agentsContainer.innerHTML = '<div id="no-agents" style="padding:20px;text-align:center;color:#555;font-size:13px">All agents hidden. <a href="#" onclick="showHidden();return false" style="color:#7c7cf0">Show all</a></div>';
+        return;
+    }
+    if (visible.length === 0) {
+        agentsContainer.innerHTML = '<div id="no-agents">No devices connected</div>';
+        return;
+    }
+    visible.forEach(a => addAgentCard(a.id, a.name, a.ip));
+}
+
+function esc(s) { return String(s).replace(/[&<>"']/g, function(m) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]; }); }
+
+function addAgentCard(id, name, ip) {
+    const existing = document.querySelector(`[data-agent-id="${id}"]`);
+    if (existing) return;
+    const card = document.createElement('div');
+    card.className = 'agent-card';
+    card.dataset.agentId = id;
+    card.innerHTML = '<div class="agent-name"></div><div class="agent-ip"></div><div class="agent-id"></div><div class="preview-thumb"><img src=""></div><div class="agent-meta"><span><span class="agent-status"></span>Online</span></div>';
+    card.querySelector('.agent-name').textContent = name;
+    card.querySelector('.agent-ip').textContent = ip || '?';
+    card.querySelector('.agent-id').textContent = id;
+    const meta = card.querySelector('.agent-meta');
+    const hideBtn = document.createElement('span');
+    hideBtn.className = 'hide-agent';
+    hideBtn.style.cssText = 'cursor:pointer;font-size:11px;color:#555;display:none';
+    hideBtn.textContent = '✕ hide';
+    hideBtn.onclick = function(e) { e.stopPropagation(); hideAgent(id); };
+    meta.appendChild(hideBtn);
+    const serverBtn = document.createElement('span');
+    serverBtn.className = 'make-server';
+    serverBtn.style.cssText = 'cursor:pointer;font-size:11px;color:#7c7cf0;display:none;margin-left:5px';
+    serverBtn.textContent = '★ server';
+    serverBtn.onclick = function(e) { e.stopPropagation(); makeServer(id); };
+    meta.appendChild(serverBtn);
+    if (isAuthenticated) card.querySelector('.hide-agent').style.display = 'inline';
+    card.onclick = () => { if (gridMode) focusAgent(id); else selectAgent(id); };
+    agentsContainer.prepend(card);
+    const noAgents = document.getElementById('no-agents');
+    if (noAgents) noAgents.remove();
+}
+
+function hideAgent(id) {
+    const hidden = JSON.parse(localStorage.getItem('hiddenAgents') || '[]');
+    if (!hidden.includes(id)) hidden.push(id);
+    localStorage.setItem('hiddenAgents', JSON.stringify(hidden));
+    const card = document.querySelector(`[data-agent-id="${id}"]`);
+    if (card) card.remove();
+    document.getElementById('show-hidden').style.display = 'inline';
+    if (document.querySelectorAll('.agent-card').length === 0) {
+        agentsContainer.innerHTML = '<div id="no-agents" style="padding:20px;text-align:center;color:#555;font-size:13px">All agents hidden. <a href="#" onclick="showHidden();return false" style="color:#7c7cf0">Show all</a></div>';
+    }
+}
+
+function makeServer(id) {
+    fetch('/api/make-server/' + id, {
+        method: 'POST',
+        headers: {'Authorization': 'Basic ' + btoa('puneet:puneet12')}
+    }).then(r => r.json()).then(d => {
+        alert('✅ ' + d.agent + ' will become server when cloud is unavailable');
+    });
+}
+
+function showHidden() {
+    localStorage.removeItem('hiddenAgents');
+    document.getElementById('show-hidden').style.display = 'none';
+    // Re-render all agents by fetching from connected WS
+    // The next agent-list message will re-render
+}
+
+function removeAgentCard(id) {
+    const card = document.querySelector(`[data-agent-id="${id}"]`);
+    if (card) card.remove();
+    if (agentsContainer.children.length === 0 || 
+        (agentsContainer.children.length === 1 && agentsContainer.children[0].id === 'no-agents')) {
+        agentsContainer.innerHTML = '<div id="no-agents">No devices connected</div>';
+    }
+}
+
+function selectAgent(id) {
+    document.querySelectorAll('.agent-card').forEach(c => c.classList.remove('selected'));
+    const card = document.querySelector(`[data-agent-id="${id}"]`);
+    if (card) card.classList.add('selected');
+    selectedAgentId = id;
+    placeholder.style.display = 'none';
+    viewerActive.style.display = 'flex';
+    viewerName.textContent = card ? card.querySelector('.agent-name').textContent : id;
+    screenImg.src = '';
+    isViewing = false;
+    btnView.textContent = 'View';
+    btnView.classList.remove('active');
+}
+
+btnView.onclick = () => {
+    if (!selectedAgentId) return;
+    if (isViewing) {
+        stopViewing();
+    } else {
+        isViewing = true;
+        btnView.textContent = 'Viewing...';
+        btnView.classList.add('active');
+        ws.send(JSON.stringify({ type: 'view-agent', agentId: selectedAgentId }));
+        
+        // Auto-request direct tunnel for faster speed
+        fetch('/api/tunnel/' + selectedAgentId, {
+            method: 'POST',
+            headers: {'Authorization': 'Basic ' + btoa('puneet:puneet12')}
+        }).then(r => r.json()).catch(() => {});
+        btnDirect.textContent = '⏳';
+        btnDirect.style.display = 'inline-block';
+        
+        // Wait 5s for tunnel, if no response, hide indicator
+        setTimeout(() => {
+            if (btnDirect.dataset.tunnelUrl) {
+                btnDirect.textContent = '🚀 Turbo';
+                btnDirect.style.background = '#4caf50';
+                // Auto-switch to direct tunnel
+                window.open(btnDirect.dataset.tunnelUrl, '_blank');
+            } else {
+                btnDirect.textContent = '☁️ Cloud';
+                btnDirect.style.background = '#2a2a5e';
+            }
+        }, 5000);
+    }
+};
+
+btnControl.onclick = () => {
+    if (!selectedAgentId || !isViewing) return;
+    isControlling = !isControlling;
+    btnControl.textContent = isControlling ? 'Stop Control' : 'Control';
+    btnControl.classList.toggle('active');
+    controlIndicator.style.display = isControlling ? 'block' : 'none';
+    btnSendFile.style.display = isControlling ? 'inline-block' : 'none';
+    if (isControlling) {
+        enableControl();
+    } else {
+        disableControl();
+    }
+};
+
+btnDirect.onclick = () => {
+    if (!selectedAgentId) return;
+    // Request direct tunnel for the focused agent
+    fetch('/api/tunnel/' + selectedAgentId, {
+        method: 'POST',
+        headers: {'Authorization': 'Basic ' + btoa('puneet:puneet12')}
+    }).then(r => r.json()).then(d => {
+        btnDirect.textContent = '⏳ Starting...';
+        btnDirect.disabled = true;
+        // Wait for tunnel-status message with URL
+    });
+    // If we already have a tunnel URL, open it
+    if (btnDirect.dataset.tunnelUrl) {
+        window.open(btnDirect.dataset.tunnelUrl, '_blank');
+    }
+};
+
+btnSendFile.onclick = () => {
+    if (!selectedAgentId) return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.onchange = () => {
+        const file = input.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+            const b64 = reader.result.split(',')[1];
+            fetch(window.location.origin + '/api/send-file/' + selectedAgentId, {
+                method: 'POST',
+                headers: {'X-Filename': file.name, 'Authorization': 'Basic ' + btoa('puneet:puneet12')},
+                body: Uint8Array.from(atob(b64), c => c.charCodeAt(0))
+            }).then(r => r.json()).then(d => alert('Sent: ' + file.name)).catch(e => alert('Failed'));
+        };
+        reader.readAsDataURL(file);
+    };
+    input.click();
+};
+
+btnStop.onclick = () => {
+    stopViewing();
+    placeholder.style.display = 'flex';
+    viewerActive.style.display = 'none';
+    selectedAgentId = null;
+    document.querySelectorAll('.agent-card').forEach(c => c.classList.remove('selected'));
+};
+
+function stopViewing() {
+    if (isControlling) {
+        isControlling = false;
+        btnControl.textContent = 'Control';
+        btnControl.classList.remove('active');
+        controlIndicator.style.display = 'none';
+        disableControl();
+    }
+    if (isViewing) {
+        ws.send(JSON.stringify({ type: 'stop-viewing' }));
+        isViewing = false;
+        btnView.textContent = 'View';
+        btnView.classList.remove('active');
+    }
+}
+
+function enableControl() {
+    const screenEl = document.getElementById('viewer-screen');
+    screenEl.addEventListener('mousemove', onMouseMove);
+    screenEl.addEventListener('click', onMouseClick);
+    document.addEventListener('keydown', onKeyDown);
+}
+
+function disableControl() {
+    const screenEl = document.getElementById('viewer-screen');
+    screenEl.removeEventListener('mousemove', onMouseMove);
+    screenEl.removeEventListener('click', onMouseClick);
+    document.removeEventListener('keydown', onKeyDown);
+}
+
+function onMouseMove(e) {
+    if (!isControlling || !selectedAgentId) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width * 100).toFixed(2);
+    const y = ((e.clientY - rect.top) / rect.height * 100).toFixed(2);
+    ws.send(JSON.stringify({ type: 'control', agentId: selectedAgentId, command: 'mousemove', params: { x, y } }));
+}
+
+function onMouseClick(e) {
+    if (!isControlling || !selectedAgentId) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width * 100).toFixed(2);
+    const y = ((e.clientY - rect.top) / rect.height * 100).toFixed(2);
+    ws.send(JSON.stringify({ type: 'control', agentId: selectedAgentId, command: 'click', params: { x, y, button: e.button } }));
+}
+
+function onKeyDown(e) {
+    if (!isControlling || !selectedAgentId) return;
+    ws.send(JSON.stringify({ type: 'control', agentId: selectedAgentId, command: 'keypress', params: { key: e.key, code: e.code } }));
+}
+
+// Grid View Functions
+function toggleGrid() {
+    gridMode = !gridMode;
+    document.getElementById('btn-grid').textContent = gridMode ? '⊞ Exit Grid' : '⊞ Grid';
+    document.getElementById('grid-container').style.display = gridMode ? 'flex' : 'none';
+    document.getElementById('viewer-placeholder').style.display = gridMode ? 'none' : '';
+    document.getElementById('viewer-active').style.display = gridMode ? 'none' : '';
+    
+    if (gridMode) {
+        refreshGridView();
+        if (!viewingAll) {
+            viewingAll = true;
+            // View all agents
+            allAgents.forEach(a => {
+                ws.send(JSON.stringify({type: 'view-agent', agentId: a.id}));
+            });
+        }
+    } else {
+        if (viewingAll) {
+            viewingAll = false;
+            allAgents.forEach(a => {
+                ws.send(JSON.stringify({type: 'stop-viewing', agentId: a.id}));
+            });
+        }
+    }
+}
+
+function refreshGridView() {
+    const grid = document.getElementById('grid-container');
+    grid.innerHTML = '';
+    allAgents.forEach(a => {
+        const card = document.createElement('div');
+        card.style.cssText = 'width:calc(33%-10px);min-width:250px;flex:1 1 300px;background:#1a1a3e;border-radius:8px;overflow:hidden;cursor:pointer;border:2px solid #2a2a5e';
+        const nameEl = document.createElement('span');
+        nameEl.textContent = a.name;
+        const ipEl = document.createElement('span');
+        ipEl.style.cssText = 'color:#555';
+        ipEl.textContent = a.ip || '?';
+        const headerDiv = document.createElement('div');
+        headerDiv.style.cssText = 'padding:6px 10px;font-size:12px;color:#888;display:flex;justify-content:space-between';
+        headerDiv.appendChild(nameEl);
+        headerDiv.appendChild(ipEl);
+        card.appendChild(headerDiv);
+        const imgDiv = document.createElement('div');
+        imgDiv.style.cssText = 'position:relative';
+        const img = document.createElement('img');
+        img.id = 'grid-img-' + a.id;
+        img.style.cssText = 'width:100%;display:block;aspect-ratio:16/9;object-fit:contain;background:#0a0a20';
+        img.src = allFrames[a.id] ? 'data:image/jpeg;base64,' + allFrames[a.id] : '';
+        imgDiv.appendChild(img);
+        card.appendChild(imgDiv);
+        card.onclick = () => focusAgent(a.id);
+        grid.appendChild(card);
+    });
+}
+
+function updateGridFrame(agentId, frame) {
+    const img = document.getElementById('grid-img-' + agentId);
+    if (img) img.src = 'data:image/jpeg;base64,' + frame;
+}
+
+function focusAgent(id) {
+    toggleGrid(); // Exit grid mode
+    selectAgent(id); // Select the agent
+    // Start viewing
+    if (!isViewing) {
+        isViewing = true;
+        btnView.textContent = 'Viewing...';
+        btnView.classList.add('active');
+        ws.send(JSON.stringify({ type: 'view-agent', agentId: id }));
+    }
+}
+
+function cleanupLogs() {
+    if (confirm('Clear all logs from server and all agents?')) {
+        fetch('/api/cleanup', {
+            method: 'POST',
+            headers: {'Authorization': 'Basic ' + btoa('puneet:puneet12')}
+        }).then(r => r.json()).then(d => {
+            alert('Cleaned: ' + d.historyCleared + ' history entries, ' + d.agentsNotified + ' agents notified');
+        }).catch(e => alert('Cleanup failed: ' + e));
+    }
+}
+
+connect();
+</script>
+</body>
+</html>
