@@ -321,9 +321,11 @@ wss.on('connection', (ws, req) => {
           ws.org = data.org || '';
           // Get client IP from WebSocket connection
           const clientIp = req.socket.remoteAddress?.replace(/^::ffff:/, '') || 'unknown';
+          // Try X-Forwarded-For first (behind proxy like Render/Cloudflare)
+          const forwardedIp = (req.headers['x-forwarded-for'] || '').split(',')[0]?.trim();
           // Parse status data from agent-hello - prefer agent-reported IP
           const helloData = data.data || {};
-          const agentIP = helloData.agentIP || clientIp;
+          const agentIP = helloData.agentIP || forwardedIp || clientIp;
           agents.set(data.agentId, {
             ws,
             name: data.name || 'Unknown',
