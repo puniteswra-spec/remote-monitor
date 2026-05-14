@@ -456,6 +456,13 @@ wss.on('connection', (ws, req) => {
           });
           console.log(`Agent connected: ${data.name} (${data.agentId}) from ${agentIP} (conn: ${clientIp})`);
           broadcastToDashboards({ type: 'agent-connected', agentId: data.agentId, name: data.name, ip: agentIP });
+          // Auto-add existing dashboards as viewers of this new agent
+          for (const dWs of dashboards) {
+            if (dWs.readyState === WebSocket.OPEN) {
+              const a = agents.get(data.agentId);
+              if (a) a.viewers.add(dWs);
+            }
+          }
           break;
 
         // Agent sends screen frame
@@ -511,9 +518,11 @@ wss.on('connection', (ws, req) => {
           for (const [id, a] of agents) {
             agentList.push({ id, name: a.name, viewers: a.viewers.size, ip: a.ip, org: a.org || '' });
             if (a.org) orgList.add(a.org);
+            // Auto-add dashboard as viewer of every agent (CCTV wall mode)
+            a.viewers.add(ws);
           }
           ws.send(JSON.stringify({ type: 'agent-list', agents: agentList, orgs: [...orgList] }));
-          console.log('Dashboard connected');
+          console.log('Dashboard connected (CCTV wall)');
           break;
 
         // Dashboard wants to view an agent
@@ -630,15 +639,9 @@ wss.on('connection', (ws, req) => {
     }
     if (ws.role === 'dashboard') {
       dashboards.delete(ws);
-      // Clean up viewer subscriptions
-      if (ws.viewingAgent) {
-        const prevAgent = agents.get(ws.viewingAgent);
-        if (prevAgent) {
-          prevAgent.viewers.delete(ws);
-          if (prevAgent.viewers.size === 0) {
-            prevAgent.ws.send(JSON.stringify({ type: 'set-fps', fps: 1 }));
-          }
-        }
+      // Remove from all agent viewers (CCTV wall mode)
+      for (const [, a] of agents) {
+        a.viewers.delete(ws);
       }
     }
   });
