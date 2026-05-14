@@ -1071,9 +1071,11 @@ func connect() {
 		if err == nil { log("Connected: " + url); break }
 	}
 	if c == nil { log("Disconnected: all URLs failed"); return }
+	log("Connected: " + c.RemoteAddr().String())
 	defer c.Close()
 	wsRef = c // Save reference for agent responses
 	localIP := getLocalIP()
+	log("Local IP: " + localIP)
 	c.WriteJSON(Message{Type: "agent-hello", AgentId: agentId, Name: hostname, Org: orgName, Data: map[string]interface{}{
 		"bootTime":     bootTime().Format(time.RFC3339),
 		"programStart": programStartTime.Format(time.RFC3339),
