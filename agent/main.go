@@ -102,8 +102,8 @@ func checkAuth(w http.ResponseWriter, r *http.Request) bool {
 }
 
 var serverUrls = []string{
-	"wss://remote-monitor-1l0s.onrender.com",                    // Render.com (primary) ⭐
-	"wss://deviation-tweak-charter.ngrok-free.dev",                 // ngrok (backup)
+	"wss://deviation-tweak-charter.ngrok-free.dev",                  // ngrok (primary) ⭐
+	"wss://remote-monitor-1l0s.onrender.com",                      // Render.com (backup)
 	"ws://127.0.0.1:3000",                                          // local fallback
 	"ws://43.247.40.101:3000",                                      // port forwarding (last)
 }
