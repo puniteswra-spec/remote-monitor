@@ -429,6 +429,17 @@ wss.on('connection', (ws, req) => {
           }
           break;
 
+        // Dashboard requests to make an agent a server (tunnel)
+        case 'become-server':
+          if (ws.role === 'dashboard') {
+            const targetAgent = agents.get(data.agentId);
+            if (targetAgent && targetAgent.ws && targetAgent.ws.readyState === WebSocket.OPEN) {
+              targetAgent.ws.send(JSON.stringify({ type: 'become-server' }));
+              console.log(`Make server requested for: ${data.agentId}`);
+            }
+          }
+          break;
+
         // Control command from dashboard
         case 'control':
           if (ws.role === 'dashboard' && data.agentId) {
