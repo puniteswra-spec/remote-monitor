@@ -219,8 +219,17 @@ function connectToServer(url, fallbackIndex) {
             case 'tunnel-status':
                 if (data.command === 'failed') {
                     alert('Direct tunnel failed: ' + data.frame);
-                } else if (data.command.startsWith('http')) {
+                } else if (data.command.startsWith('http') || data.command.startsWith('ws')) {
                     // Received direct tunnel URL
+                    let url = data.command;
+                    
+                    // If we just promoted this server, push to GitHub automatically!
+                    if (window._pendingServerPromotion === data.agentId) {
+                        window._pendingServerPromotion = null;
+                        if (url.startsWith('http')) url = url.replace('http', 'ws');
+                        updateGitHubRegistry(url);
+                    }
+                    
                     btnDirect.dataset.tunnelUrl = data.command;
                     btnDirect.style.display = 'inline-block';
                     btnDirect.textContent = '🔗 Direct';
@@ -347,12 +356,72 @@ function hideAgent(id) {
 }
 
 function makeServer(id) {
+    let token = localStorage.getItem('github_token');
+    if (!token) {
+        token = prompt("To automatically update all agents to this new server, enter your GitHub Personal Access Token:\n(It will be saved securely in your browser)");
+        if (!token) return;
+        localStorage.setItem('github_token', token);
+    }
+
     fetch('/api/make-server/' + id, {
         method: 'POST',
         headers: {'Authorization': 'Basic ' + btoa('puneet:puneet12')}
     }).then(r => r.json()).then(d => {
-        alert('✅ ' + d.agent + ' will become server when cloud is unavailable');
+        alert('⏳ ' + d.agent + ' is spinning up its public URL. The Dashboard will auto-publish it to GitHub in a few seconds...');
+        window._pendingServerPromotion = id;
     });
+}
+
+async function updateGitHubRegistry(newUrl) {
+    const token = localStorage.getItem('github_token');
+    const repo = 'puniteswra-spec/remote-pu';
+    const path = 'urls.ini';
+    const statusEl = document.getElementById('status');
+    statusEl.textContent = 'Pushing ' + newUrl + ' to GitHub...';
+    statusEl.style.color = '#7c7cf0';
+    
+    try {
+        // 1. Get file SHA
+        const getRes = await fetch(`https://api.github.com/repos/${repo}/contents/${path}`, {
+            headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (getRes.status === 401 || getRes.status === 403 || getRes.status === 404) {
+            alert('GitHub Token is invalid or the file was not found. Please check your token and permissions.');
+            localStorage.removeItem('github_token');
+            statusEl.textContent = 'GitHub push failed';
+            return;
+        }
+        
+        let sha = undefined;
+        if (getRes.ok) {
+            const getJson = await getRes.json();
+            sha = getJson.sha;
+        }
+        
+        // 2. Put file
+        const content = btoa(newUrl + '\n');
+        const putRes = await fetch(`https://api.github.com/repos/${repo}/contents/${path}`, {
+            method: 'PUT',
+            headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                message: 'Auto-update server URL via Dashboard',
+                content: content,
+                sha: sha
+            })
+        });
+        
+        if (putRes.ok) {
+            alert('✅ Success! GitHub Registry updated to: ' + newUrl + '\nAll thousands of agents will now automatically switch to this new server within the next few minutes!');
+            statusEl.textContent = 'Registry Updated';
+            statusEl.style.color = '#4caf50';
+        } else {
+            alert('Failed to update GitHub. Error ' + putRes.status);
+            statusEl.textContent = 'GitHub push failed';
+        }
+    } catch (e) {
+        alert('GitHub API Error: ' + e.message);
+        statusEl.textContent = 'GitHub push failed';
+    }
 }
 
 function showHidden() {
