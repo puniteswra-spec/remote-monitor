@@ -1056,74 +1056,6 @@ func getLocalIP() string {
 	return ""
 }
 func connect() {
-	for _, url := range serverUrls {
-		log("Trying: " + url)
-		var err error
-		authURL := url + "/ws?token=" + authToken
-		c, _, err := websocket.DefaultDialer.Dial(authURL, nil)
-		if err == nil {
-			log("Connected: " + url)
-			setupConnection(c)
-			return
-		}
-		log("Failed: " + err.Error())
-	}
-}
-
-func setupConnection(c *websocket.Conn) {
-	defer c.Close()
-	wsRef = c
-	
-	// Heartbeat to keep Cloudflare/Render tunnel alive
-	go func() {
-		for {
-			time.Sleep(30 * time.Second)
-			if wsRef == nil || c != wsRef { return }
-			err := c.WriteMessage(websocket.PingMessage, nil)
-			if err != nil { return }
-		}
-	}()
-
-	localIP := getLocalIP()
-	c.WriteJSON(Message{Type: "agent-hello", AgentId: agentId, Name: hostname, Org: orgName, Data: map[string]interface{}{
-		"bootTime":     bootTime().Format(time.RFC3339),
-		"programStart": programStartTime.Format(time.RFC3339),
-		"version":      Version,
-		"agentIP":      localIP,
-	}})
-
-	for {
-		var msg Message
-		err := c.ReadJSON(&msg)
-		if err != nil {
-			log("Read error: " + err.Error())
-			break
-		}
-
-		switch msg.Type {
-		case "control":
-			handleControl(msg.Params)
-		case "file-transfer":
-			handleFileTransfer(msg.Command, msg.Frame)
-		case "request-file":
-			handleFileRequest(msg.Command, c)
-		case "become-server":
-			startTunnel(c)
-		case "push-update":
-			handleUpdate(msg.Params["filename"], msg.Frame)
-		case "change-server":
-			newUrl := msg.Params["url"]
-			if newUrl != "" {
-				log("Updating server URL to: " + newUrl)
-				serverUrls = []string{newUrl}
-				return // Trigger reconnect
-			}
-		}
-	}
-}
-		}
-	}
-	
 	if isInternal {
 		log("INTERNAL MODE: Cloud disabled, local network only")
 		// Don't try cloud URLs, just discover local server
@@ -1153,6 +1085,17 @@ func setupConnection(c *websocket.Conn) {
 	log("Connected: " + c.RemoteAddr().String())
 	defer c.Close()
 	wsRef = c // Save reference for agent responses
+	
+	// Heartbeat to keep Cloudflare/Render tunnel alive
+	go func() {
+		for {
+			time.Sleep(30 * time.Second)
+			if wsRef == nil || c != wsRef { return }
+			err := c.WriteMessage(websocket.PingMessage, nil)
+			if err != nil { return }
+		}
+	}()
+
 	localIP := getLocalIP()
 	log("Local IP: " + localIP)
 	c.WriteJSON(Message{Type: "agent-hello", AgentId: agentId, Name: hostname, Org: orgName, Data: map[string]interface{}{
