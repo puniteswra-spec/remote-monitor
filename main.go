@@ -22,6 +22,7 @@ import (
 
 	"github.com/kbinani/screenshot"
 	"github.com/gorilla/websocket"
+	"github.com/pion/webrtc/v4"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
@@ -1056,7 +1057,7 @@ func getLocalIP() string {
 	return ""
 }
 func connect() {
-	if isInternal {
+	if isInternalMode {
 		log("INTERNAL MODE: Cloud disabled, local network only")
 		// Don't try cloud URLs, just discover local server
 		serverIP := discoverServer()
