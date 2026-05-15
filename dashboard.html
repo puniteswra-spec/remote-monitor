@@ -226,6 +226,22 @@ function connectToServer(url, fallbackIndex) {
                     btnDirect.textContent = '🔗 Direct';
                 }
                 break;
+            case 'webrtc-answer':
+                if (peerConnections[data.agentId]) {
+                    peerConnections[data.agentId].setRemoteDescription(new RTCSessionDescription({
+                        type: 'answer',
+                        sdp: data.sdp
+                    }));
+                }
+                break;
+            case 'webrtc-ice-candidate':
+                if (peerConnections[data.agentId]) {
+                    try {
+                        const candidate = JSON.parse(data.candidate);
+                        peerConnections[data.agentId].addIceCandidate(new RTCIceCandidate(candidate));
+                    } catch(e) {}
+                }
+                break;
         }
     };
     ws.onclose = () => {
@@ -379,6 +395,9 @@ btnView.onclick = () => {
         btnView.classList.add('active');
         ws.send(JSON.stringify({ type: 'view-agent', agentId: selectedAgentId }));
         
+        // Setup P2P WebRTC connection
+        setupWebRTC(selectedAgentId);
+        
         // Auto-request direct tunnel for faster speed
         fetch('/api/tunnel/' + selectedAgentId, {
             method: 'POST',
@@ -475,7 +494,49 @@ function stopViewing() {
         isViewing = false;
         btnView.textContent = 'View';
         btnView.classList.remove('active');
+        if (selectedAgentId && peerConnections[selectedAgentId]) {
+            peerConnections[selectedAgentId].close();
+            delete peerConnections[selectedAgentId];
+        }
     }
+}
+
+const peerConnections = {};
+
+function setupWebRTC(agentId) {
+    if (peerConnections[agentId]) {
+        peerConnections[agentId].close();
+    }
+    
+    const pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    });
+    peerConnections[agentId] = pc;
+    
+    pc.onicecandidate = e => {
+        if (e.candidate) {
+            ws.send(JSON.stringify({
+                type: 'webrtc-ice-candidate',
+                target: agentId,
+                candidate: JSON.stringify(e.candidate)
+            }));
+        }
+    };
+    
+    // Create DataChannel for receiving video frames directly (P2P)
+    const dc = pc.createDataChannel('video-stream');
+    dc.onmessage = e => {
+        screenImg.src = `data:image/jpeg;base64,${e.data}`;
+    };
+    
+    pc.createOffer().then(offer => {
+        pc.setLocalDescription(offer);
+        ws.send(JSON.stringify({
+            type: 'webrtc-offer',
+            target: agentId,
+            sdp: offer.sdp
+        }));
+    });
 }
 
 function enableControl() {

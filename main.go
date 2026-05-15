@@ -140,6 +140,28 @@ func loadCustomUrls() {
 		log("Loaded URLs from: " + urlFile)
 		break // Only load from first found file
 	}
+	
+	// Centralized URL Registry - Fetch latest active servers from GitHub
+	resp, err := http.Get("https://raw.githubusercontent.com/puniteswra-spec/remote-pu/main/urls.ini")
+	if err == nil {
+		defer resp.Body.Close()
+		buf := new(bytes.Buffer)
+		buf.ReadFrom(resp.Body)
+		lines := strings.Split(buf.String(), "\n")
+		added := false
+		for i := len(lines) - 1; i >= 0; i-- {
+			line := strings.TrimSpace(lines[i])
+			if line != "" && !strings.HasPrefix(line, "#") {
+				serverUrls = append([]string{line}, serverUrls...)
+				added = true
+			}
+		}
+		if added {
+			log("Loaded URLs from Central GitHub Registry")
+		}
+	} else {
+		log("Warning: Could not fetch Central URL Registry")
+	}
 }
 
 // Agent info for server mode
@@ -1212,6 +1234,23 @@ func setupConnection(c *websocket.Conn) {
 				saveServerPreference(true)
 				startTunnel(c)
 			}
+			if d.Type == "webrtc-offer" {
+				if sdpStr, ok := d.Data["sdp"].(string); ok {
+					var offer webrtc.SessionDescription
+					offer.SDP = sdpStr
+					offer.Type = webrtc.SDPTypeOffer
+					viewerId := d.Data["viewer"].(string)
+					go handleWebRTCOffer(c, viewerId, offer)
+				}
+			}
+			if d.Type == "webrtc-ice-candidate" {
+				if candStr, ok := d.Data["candidate"].(string); ok {
+					var cand webrtc.ICECandidateInit
+					json.Unmarshal([]byte(candStr), &cand)
+					viewerId := d.Data["viewer"].(string)
+					handleWebRTCICECandidate(viewerId, cand)
+				}
+			}
 		}
 	}()
 	fc := 0
@@ -1220,11 +1259,20 @@ func setupConnection(c *websocket.Conn) {
 		case <-done: return
 		default:
 			for _, m := range captureFrames() {
-				m.Type = "agent-frame"
-				m.AgentId = agentId
-				if err := c.WriteJSON(m); err != nil {
-					log("Disconnected: write error: " + err.Error())
-					return
+				// Send over WebRTC DataChannel if possible
+				sentToWebRTC := sendFrameOverWebRTC(m.Frame)
+				
+				// Send via WebSocket if there are no WebRTC viewers OR we always want to hit the server for recording
+				// To save bandwidth, we ONLY send high FPS to WebRTC if available, and send 1 FPS to WebSocket
+				shouldSendToWebSocket := sentToWebRTC == 0 || (fc % fps == 0)
+				
+				if shouldSendToWebSocket {
+					m.Type = "agent-frame"
+					m.AgentId = agentId
+					if err := c.WriteJSON(m); err != nil {
+						log("Disconnected: write error: " + err.Error())
+						return
+					}
 				}
 				fc++
 			}

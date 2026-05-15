@@ -519,6 +519,7 @@ wss.on('connection', (ws, req) => {
         // Browser (dashboard) registers
         case 'dashboard-hello':
           ws.role = 'dashboard';
+          ws._id = Math.random().toString(36).slice(2); // Unique viewer ID for WebRTC
           dashboards.add(ws);
           // Send current agent list with IPs and orgs
           const agentList = [];
@@ -656,6 +657,59 @@ wss.on('connection', (ws, req) => {
           }
           ws.send(JSON.stringify({ type: 'update-status', pushedTo: pushedCount }));
           console.log(`Update pushed to ${pushedCount} agents: ${data.command}`);
+          break;
+
+        // WebRTC Signaling
+        case 'webrtc-offer':
+          if (ws.role === 'dashboard') {
+            const targetAgent = agents.get(data.target);
+            if (targetAgent && targetAgent.ws && targetAgent.ws.readyState === WebSocket.OPEN) {
+              targetAgent.ws.send(JSON.stringify({
+                type: 'webrtc-offer',
+                data: {
+                  sdp: data.sdp,
+                  viewer: ws._id
+                }
+              }));
+            }
+          }
+          break;
+
+        case 'webrtc-answer':
+          if (ws.role === 'agent' && data.data && data.data.target) {
+            const targetViewer = [...dashboards].find(d => d._id === data.data.target);
+            if (targetViewer && targetViewer.readyState === WebSocket.OPEN) {
+              targetViewer.send(JSON.stringify({
+                type: 'webrtc-answer',
+                agentId: ws.agentId,
+                sdp: data.data.sdp
+              }));
+            }
+          }
+          break;
+
+        case 'webrtc-ice-candidate':
+          if (ws.role === 'dashboard') {
+            const targetAgent = agents.get(data.target);
+            if (targetAgent && targetAgent.ws && targetAgent.ws.readyState === WebSocket.OPEN) {
+              targetAgent.ws.send(JSON.stringify({
+                type: 'webrtc-ice-candidate',
+                data: {
+                  candidate: data.candidate,
+                  viewer: ws._id
+                }
+              }));
+            }
+          } else if (ws.role === 'agent' && data.data && data.data.target) {
+            const targetViewer = [...dashboards].find(d => d._id === data.data.target);
+            if (targetViewer && targetViewer.readyState === WebSocket.OPEN) {
+              targetViewer.send(JSON.stringify({
+                type: 'webrtc-ice-candidate',
+                agentId: ws.agentId,
+                candidate: data.data.candidate
+              }));
+            }
+          }
           break;
 
         default:
