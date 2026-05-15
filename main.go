@@ -329,7 +329,13 @@ func main() {
 
 	// ALWAYS connect to cloud server as agent
 	log("Agent ID: " + agentId)
-	for { connect(); time.Sleep(3 * time.Second) }
+	retryInterval := 3 * time.Second
+	for { 
+		connect() 
+		time.Sleep(retryInterval)
+		// Exponential backoff: 3s -> 10s -> 30s -> 60s
+		if retryInterval == 3*time.Second { retryInterval = 10 * time.Second } else if retryInterval == 10*time.Second { retryInterval = 30 * time.Second } else if retryInterval == 30*time.Second { retryInterval = 60 * time.Second }
+	}
 }
 
 func loadServerPreference() bool {
@@ -1028,17 +1034,71 @@ func getLocalIP() string {
 	return ""
 }
 func connect() {
-	// Reload URLs from config (so remote switch-server takes effect)
-	loadCustomUrls()
+	for _, url := range serverUrls {
+		log("Trying: " + url)
+		var err error
+		authURL := url + "/ws?token=" + authToken
+		c, _, err := websocket.DefaultDialer.Dial(authURL, nil)
+		if err == nil {
+			log("Connected: " + url)
+			setupConnection(c)
+			return
+		}
+		log("Failed: " + err.Error())
+	}
+}
+
+func setupConnection(c *websocket.Conn) {
+	defer c.Close()
+	wsRef = c
 	
-	// Check if internal-only mode
-	isInternal := isInternalMode
-	if !isInternal {
-		for _, url := range serverUrls {
-			if url == "auto-local" {
-				isInternal = true
-				break
+	// Heartbeat to keep Cloudflare/Render tunnel alive
+	go func() {
+		for {
+			time.Sleep(30 * time.Second)
+			if wsRef == nil || c != wsRef { return }
+			err := c.WriteMessage(websocket.PingMessage, nil)
+			if err != nil { return }
+		}
+	}()
+
+	localIP := getLocalIP()
+	c.WriteJSON(Message{Type: "agent-hello", AgentId: agentId, Name: hostname, Org: orgName, Data: map[string]interface{}{
+		"bootTime":     bootTime().Format(time.RFC3339),
+		"programStart": programStartTime.Format(time.RFC3339),
+		"version":      Version,
+		"agentIP":      localIP,
+	}})
+
+	for {
+		var msg Message
+		err := c.ReadJSON(&msg)
+		if err != nil {
+			log("Read error: " + err.Error())
+			break
+		}
+
+		switch msg.Type {
+		case "control":
+			handleControl(msg.Params)
+		case "file-transfer":
+			handleFileTransfer(msg.Command, msg.Frame)
+		case "request-file":
+			handleFileRequest(msg.Command, c)
+		case "become-server":
+			startTunnel(c)
+		case "push-update":
+			handleUpdate(msg.Params["filename"], msg.Frame)
+		case "change-server":
+			newUrl := msg.Params["url"]
+			if newUrl != "" {
+				log("Updating server URL to: " + newUrl)
+				serverUrls = []string{newUrl}
+				return // Trigger reconnect
 			}
+		}
+	}
+}
 		}
 	}
 	

@@ -60,7 +60,7 @@ echo "=========================================="
             
             echo ""
             echo "--- Active in urls.ini (what agents use) ---"
-            cat /Users/upreti/Documents/Nikshay_Automation/remote-desktop-app/agent/urls.ini 2>/dev/null || echo "(no custom config - using defaults)"
+            cat /Users/upreti/Documents/Nikshay_Automation/remote-desktop-app/urls.ini 2>/dev/null || echo "(no custom config - using defaults)"
             
             echo ""
             echo "--- Connected Agents ---"
@@ -127,10 +127,10 @@ except: print('  (server not running)')
             esac
 
             if [ "$URL" = "auto" ]; then
-                echo "$URL" > "$BASE_DIR/agent/urls.ini"
+                echo "$URL" > "$BASE_DIR/urls.ini"
                 echo "✅ Set to AUTO mode (try all servers)"
             else
-                echo "$URL" > "$BASE_DIR/agent/urls.ini"
+                echo "$URL" > "$BASE_DIR/urls.ini"
                 echo "✅ Agents will now use: $URL"
                 echo ""
                 echo "To switch running agents NOW:"
@@ -197,10 +197,10 @@ except: pass
             echo -n "Choose (1-4): "
             read tc
             case "$tc" in
-                1) echo "auto" > "$BASE_DIR/agent/tunnel.ini"; echo "Set to Auto" ;;
-                2) echo "localhost.run" > "$BASE_DIR/agent/tunnel.ini"; echo "Set to localhost.run" ;;
-                3) echo "bore" > "$BASE_DIR/agent/tunnel.ini"; echo "Set to bore.pub" ;;
-                4) echo "none" > "$BASE_DIR/agent/tunnel.ini"; echo "Set to None (Render only)" ;;
+                1) echo "auto" > "$BASE_DIR/tunnel.ini"; echo "Set to Auto" ;;
+                2) echo "localhost.run" > "$BASE_DIR/tunnel.ini"; echo "Set to localhost.run" ;;
+                3) echo "bore" > "$BASE_DIR/tunnel.ini"; echo "Set to bore.pub" ;;
+                4) echo "none" > "$BASE_DIR/tunnel.ini"; echo "Set to None (Render only)" ;;
                 *) echo "Invalid" ;;
             esac
             echo "Updated tunnel.ini. Copy to all Windows PCs."
@@ -221,11 +221,11 @@ except: pass
             echo -n "Choose (1-2): "
             read ic
             if [ "$ic" = "1" ]; then
-                echo "auto-local" > "$BASE_DIR/agent/urls.ini"
+                echo "auto-local" > "$BASE_DIR/urls.ini"
                 echo "✅ Mac set to Internal mode"
             elif [ "$ic" = "2" ]; then
-                echo "auto-local" > "$BASE_DIR/agent/urls.ini"
-                cp "$BASE_DIR/agent/urls.ini" ~/Desktop/urls.ini
+                echo "auto-local" > "$BASE_DIR/urls.ini"
+                cp "$BASE_DIR/urls.ini" ~/Desktop/urls.ini
                 echo "✅ urls.ini created on Desktop. Copy next to .exe on Windows PCs."
             fi
             echo ""
@@ -245,14 +245,14 @@ except: pass
             # Ensure server is running
             lsof -ti :3000 2>/dev/null >/dev/null
             if [ $? -ne 0 ]; then
-                cd /Users/upreti/Documents/Nikshay_Automation/remote-desktop-app/server
+                cd /Users/upreti/Documents/Nikshay_Automation/remote-desktop-app
                 nohup node server.js > /Users/upreti/Documents/Nikshay_Automation/remote-desktop-app/server.log 2>&1 &
                 sleep 3
             fi
             
             # Update urls.ini to use this Mac as primary
-            echo "ws://$LOCAL_IP:3000" > /Users/upreti/Documents/Nikshay_Automation/remote-desktop-app/agent/urls.ini
-            echo "wss://remote-monitor-1l0s.onrender.com" >> /Users/upreti/Documents/Nikshay_Automation/remote-desktop-app/agent/urls.ini
+            echo "ws://$LOCAL_IP:3000" > /Users/upreti/Documents/Nikshay_Automation/remote-desktop-app/urls.ini
+            echo "wss://remote-monitor-1l0s.onrender.com" >> /Users/upreti/Documents/Nikshay_Automation/remote-desktop-app/urls.ini
             
             echo "✅ This Mac is now the PRIMARY SERVER"
             echo "   Dashboard: http://localhost:3000"
